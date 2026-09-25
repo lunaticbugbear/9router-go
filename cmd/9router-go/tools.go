@@ -10,6 +10,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/providers"
 )
 
 // schemaStatements is the canonical CREATE TABLE set, mirrored from
@@ -215,5 +216,33 @@ func runInitDB(_ *cli.Context) error {
 	}
 	fmt.Printf("Schema ready (%d tables verified).\n", created)
 	fmt.Println("Existing rows, when present, are untouched.")
+	return nil
+}
+
+// runModelsAudit explains where every catalog model's advertised context window
+// came from. The resolver falls back to a bare guess when no rule matches, and
+// the dashboard prints that guess exactly like a published figure, so an
+// operator asking "is this really 200k?" has no way to tell without this.
+//
+// The exit code stays 0 because a guess is a fact about the catalog, not a
+// command failure; --strict turns the count into a gate for scripts.
+func runModelsAudit(cCtx *cli.Context) error {
+	all, guessed := providers.AuditLimits()
+	lines := providers.SummarizeLimits(all, guessed)
+	if cCtx.Bool("verbose") {
+		lines = append(lines, "", "Every model and the rule that decided it:")
+		for _, limit := range all {
+			source := limit.MatchedRule
+			if source == "" {
+				source = "FALLBACK GUESS"
+			}
+			lines = append(lines, fmt.Sprintf("  %-22s %-32s %8d  %s",
+				limit.Provider, limit.Model, limit.ContextWindow, source))
+		}
+	}
+	fmt.Println(strings.Join(lines, "\n"))
+	if cCtx.Bool("strict") && len(guessed) > 0 {
+		return cli.Exit("", 1)
+	}
 	return nil
 }

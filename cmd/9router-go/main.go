@@ -133,6 +133,21 @@ func main() {
 				Usage:  "Create the canonical database schema (idempotent; existing rows untouched)",
 				Action: runInitDB,
 			},
+			{
+				Name:  "models",
+				Usage: "Model catalog tools",
+				Subcommands: []*cli.Command{
+					{
+						Name:  "audit",
+						Usage: "Show which advertised context windows are rule-based and which are fallback guesses",
+						Flags: []cli.Flag{
+							&cli.BoolFlag{Name: "verbose", Usage: "list every model with the rule that decided it"},
+							&cli.BoolFlag{Name: "strict", Usage: "exit 1 when any model falls back to a guessed context window"},
+						},
+						Action: runModelsAudit,
+					},
+				},
+			},
 		},
 		Action: runServer,
 	}
