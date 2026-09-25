@@ -32,6 +32,7 @@
   import TokenSaverView from './components/TokenSaverView.svelte'
   import TopBar from './components/TopBar.svelte'
   import BountyAssistView from './components/BountyAssistView.svelte'
+  import PersonaView from './components/PersonaView.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
   import { PROVIDER_CATALOG } from './lib/providers'
   import { getIconPath } from './components/connections/types'
@@ -61,6 +62,19 @@
   let isOAuthCallback = $state(
     typeof window !== 'undefined' && window.location.pathname.replace(/\/+$/, '') === '/callback'
   )
+
+  // The login view is reached at /login, so pathToTab reports 'login' and the
+  // originally requested route (e.g. /dashboard/personas) is lost by the time
+  // the password is accepted. Remember it when the login view renders so the
+  // post-login navigate() returns the operator to the page they asked for
+  // instead of always dumping them on the endpoint page.
+  let intendedTab = $state<ActiveTab | null>(null)
+
+  function rememberIntendedTab() {
+    if (typeof window === 'undefined') return
+    const tab = pathToTab(window.location.pathname)
+    intendedTab = tab === 'login' ? null : tab
+  }
 
   function navigate(tab: ActiveTab, replace = false, providerId?: string | null) {
     activeTab = tab
@@ -237,12 +251,14 @@
     </div>
   </div>
 {:else if (requireLogin && !isAuthenticatedState) || activeTab === 'login'}
+  {@const _rememberIntended = rememberIntendedTab()}
   <LoginView
     onSuccess={() => {
       isAuthenticatedState = true
       loadData()
       if (activeTab === 'login') {
-        navigate('endpoint')
+        navigate(intendedTab ?? 'endpoint')
+        intendedTab = null
       }
     }}
   />
@@ -329,6 +345,8 @@
               <ApiKeysView {apiKeys} onRefresh={loadData} />
             {:else if activeTab === 'bounty'}
               <BountyAssistView />
+            {:else if activeTab === 'personas'}
+              <PersonaView />
             {:else if activeTab === 'media-embedding'}
               {#if selectedMedia && selectedMediaCatalogItem}
                 <MediaProviderDetail

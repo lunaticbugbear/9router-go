@@ -56,6 +56,23 @@ export interface BountyProfile {
 
 export type BountyHelperKind = 'scope-check' | 'safe-plan' | 'triage' | 'report'
 
+export interface Persona {
+  id: string
+  /** Human-readable label; the map key is still `id`. */
+  name?: string
+  systemPrompt: string
+  /**
+   * When true the gateway APPENDS the persona block below the caller's own
+   * system content; when false it REPLACES that content entirely.
+   */
+  appendExisting: boolean
+}
+
+export interface PersonaPlane {
+  enabled: boolean
+  defaultPersona: string
+}
+
 export interface BountyHelper {
   id: BountyHelperKind
   title: string
@@ -572,6 +589,37 @@ export const api = {
       '/api/bounty/helpers/build',
       { method: 'POST', body: JSON.stringify({ profileId, kind, evidence }) }
     ),
+
+  // Personas: operator-declared system-prompt text applied either by an explicit
+  // X-9Router-Persona header or by the operator's configured default while the
+  // plane is enabled. The header is consumed locally and never forwarded upstream.
+  getPersonas: () =>
+    request<{ personas: Record<string, Persona>; enabled: boolean; defaultPersona: string }>('/api/personas'),
+  putPersona: (id: string, persona: Persona) =>
+    request<{ success: boolean; persona: Persona }>(`/api/personas/${encodeURIComponent(id)}`, {
+      method: 'PUT', body: JSON.stringify(persona),
+    }),
+  deletePersona: (id: string) =>
+    request<{ success: boolean; deleted: string; defaultStillReferencesIt: boolean }>(
+      `/api/personas/${encodeURIComponent(id)}`,
+      { method: 'DELETE' }
+    ),
+  putPersonaPlane: (plane: PersonaPlane) =>
+    request<{ success: boolean; enabled: boolean; defaultPersona: string }>('/api/personas/plane', {
+      method: 'PUT', body: JSON.stringify(plane),
+    }),
+  getPersonaPreview: (name: string) =>
+    request<{
+      persona: string
+      header: string
+      /** The exact rendered system-prompt block, markers included. */
+      addition: string
+      /** True when the persona REPLACES the caller's system prompt. */
+      replace: boolean
+      planeEnabled: boolean
+      defaultPersona: string
+      stored: boolean
+    }>(`/api/personas/preview?name=${encodeURIComponent(name)}`),
 
   // Settings
   getSettings: () => request<Settings>('/api/settings'),
