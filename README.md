@@ -128,6 +128,75 @@ Flags: `--port` (default: `PORT` env, else `20130`) and `--host` (default:
 `--ponytail`, `--auto-update`, `--no-injection-guard` are unchanged, and the
 `version`, `update`, and `mitm` subcommands are unaffected by the launcher.
 
+### Operator commands
+
+```bash
+# Diagnose the install: database schema completeness and gateway reachability.
+9router doctor
+
+# Create the canonical schema in an existing install. Idempotent: tables that
+# already exist are untouched, and no rows are modified. Use this when a
+# dashboard write fails with "no such table".
+9router init-db
+
+# Show which advertised context windows came from a rule and which are fallback
+# guesses. The gateway guesses 128000 when nothing matches and prints it like any
+# other figure; --strict exits 1 while any guess remains.
+9router models audit
+9router models audit --verbose
+```
+
+### Persona-bound model names
+
+A binding gives a model name its own prompt context, so a client that cannot send
+a system prompt can still select one by model id alone — the same shape as the
+`-mod` variants some providers expose.
+
+```bash
+# Attach a markdown persona file to a new model name.
+9router bind --target shiteru/glm-5.3 --persona-file ./ltx-quasar.md --persona-id ltx-quasar ltx-mod
+
+# A name that only carries prompt context, resolving to whatever the catalog says.
+9router bind --persona-file ./persona.md --persona-id reviewer reviewer-mod
+
+# List, disable, or remove bindings.
+9router bind --list
+9router bind --disable ltx-mod
+9router bind --delete ltx-mod
+```
+
+Flags must come **before** the model name: the CLI stops parsing options at the
+first positional argument, so a flag written after the name would be ignored (the
+command refuses to guess and reports the extra arguments instead).
+
+Then send the bound name as the model:
+
+```bash
+curl http://localhost:20130/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer <your-gateway-key>" \
+  -d '{"model":"ltx-mod","messages":[{"role":"user","content":"Say hi."}]}'
+```
+
+Behaviour that matters:
+
+- **Fail-closed.** A binding whose persona was deleted is rejected with `400`
+  before any upstream call, so a request never silently runs without the prompt
+  context the operator bound to it.
+- **A disabled binding resolves to nothing** — the name becomes an unknown model
+  rather than quietly falling back to the target.
+- **Precedence.** The `X-9Router-Persona` header wins over a binding: a client
+  that names a persona gets exactly that one, never a blend.
+- **Every call pays the persona's tokens.** The text is prepended on every
+  request; nothing is cached between calls.
+- **Personas append below the caller's system prompt** by default. `--replace`
+  makes the persona overwrite it instead, which is an explicit choice.
+
+> Persona text is operator instruction text, not data. It is stored in the
+> gateway database and never forwarded as a header, and the block is framed by
+> fixed marker lines stating that the provider's own safety policies remain
+> authoritative.
+
 > **Windows Defender / SmartScreen flags the `.exe`?** Release binaries are
 > unsigned, so a fresh release can trip a heuristic false positive (the
 > built-in auto-updater also downloads and replaces its own binary, which

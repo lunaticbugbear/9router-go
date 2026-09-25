@@ -3,6 +3,13 @@
 
 ## [Unreleased]
 
+### Persona-bound model names, catalog audit, and install tools
+
+- `9router bind` creates a model name bound to a target model and/or a persona file — the mechanism behind `-mod`-style names. Fail-closed when the bound persona is missing (400 before upstream), a disabled binding resolves to nothing, and the `X-9Router-Persona` header takes precedence over a binding. Personas append below the caller's system prompt unless `--replace` is given.
+- `9router models audit` reports which advertised context windows come from a matching rule and which are the resolver's 128000 fallback guess; `--strict` fails while any guess remains. On the current catalog 540 of 1437 models are guesses.
+- `9router doctor` checks schema completeness and gateway reachability; `9router init-db` creates the canonical schema idempotently. This closes the "no such table: apiKeys" class of failure on installs whose database was created without the dashboard schema.
+- The persona size bound is raised to 256 KiB so an agent persona document (tens of thousands of tokens) can be stored, which is the size these bindings exist to carry.
+
 ### Terminal Launcher Presentation
 
 - The ready banner now groups version, health state, Server and Dashboard URLs, plus the two local selector-header names. It does not launch a browser.
