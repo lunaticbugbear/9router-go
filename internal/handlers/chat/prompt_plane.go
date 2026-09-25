@@ -145,7 +145,12 @@ func (h *ChatHandler) resolvePersonaByID(id string) (*persona.Persona, error) {
 // apply the additions to their own body; the chat handler uses
 // attachPromptPlane so the resolved context can be reused across retries and
 // combo fallbacks.
-func (h *ChatHandler) PromptPlaneForRequest(r *http.Request) (PromptPlane, error) {
+//
+// A model binding contributes a persona only when the header named none. The
+// header is the more specific instruction: a client that explicitly asks for a
+// persona must get exactly that one, never a blend of the header's pick and the
+// binding's, and never the binding's pick on top.
+func (h *ChatHandler) PromptPlaneForRequest(r *http.Request, model string) (PromptPlane, error) {
 	profile, err := h.BountyProfileForRequest(r)
 	if err != nil {
 		return PromptPlane{}, err
@@ -154,13 +159,49 @@ func (h *ChatHandler) PromptPlaneForRequest(r *http.Request) (PromptPlane, error
 	if err != nil {
 		return PromptPlane{}, err
 	}
+	if selected == nil {
+		selected, err = h.personaFromModelBinding(model)
+		if err != nil {
+			return PromptPlane{}, err
+		}
+	}
 	return PromptPlane{Persona: selected, Bounty: profile}, nil
+}
+
+// personaFromModelBinding resolves a persona attached to a model name. A binding
+// naming a persona that is not stored fails closed, like an explicit header
+// would: the operator asked for that prompt context by binding it, so silently
+// serving the model without it would misrepresent what the request ran with.
+//
+// The model name is passed in rather than read from the request body on purpose.
+// Handlers read and consume the body before resolving the plane, so peeking at
+// r.Body at this point reads an empty stream — which is exactly how a bound
+// model once resolved to its target while its persona was silently dropped.
+func (h *ChatHandler) personaFromModelBinding(model string) (*persona.Persona, error) {
+	model = strings.TrimSpace(model)
+	if model == "" || h.Repo == nil {
+		return nil, nil
+	}
+	binding, err := h.Repo.GetModelBinding(model)
+	if err != nil {
+		return nil, fmt.Errorf("load model binding %q: %w", model, err)
+	}
+	if binding == nil {
+		// No binding on this name; the kv alias table may still rename it, which
+		// is resolution's business and carries no prompt context.
+		return nil, nil
+	}
+	id, ok := binding.PersonaID()
+	if !ok {
+		return nil, nil
+	}
+	return h.resolvePersonaByID(id)
 }
 
 // attachPromptPlane resolves the explicit request selectors and attaches the
 // resolved context for the shared fallback path.
-func (h *ChatHandler) attachPromptPlane(ctx context.Context, r *http.Request) (context.Context, error) {
-	plane, err := h.PromptPlaneForRequest(r)
+func (h *ChatHandler) attachPromptPlane(ctx context.Context, r *http.Request, model string) (context.Context, error) {
+	plane, err := h.PromptPlaneForRequest(r, model)
 	if err != nil || plane.Empty() {
 		return ctx, err
 	}

@@ -326,7 +326,7 @@ func TestAttachPromptPlaneCarriesBothSelectors(t *testing.T) {
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	r.Header.Set(PersonaHeader, "terse")
 	r.Header.Set(BountyProfileHeader, "h1")
-	ctx, err := h.attachPromptPlane(context.Background(), r)
+	ctx, err := h.attachPromptPlane(context.Background(), r, "")
 	if err != nil {
 		t.Fatal(err)
 	}

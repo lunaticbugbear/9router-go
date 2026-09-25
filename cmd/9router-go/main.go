@@ -133,6 +133,7 @@ func main() {
 				Usage:  "Create the canonical database schema (idempotent; existing rows untouched)",
 				Action: runInitDB,
 			},
+			bindModelCommand(),
 			{
 				Name:  "models",
 				Usage: "Model catalog tools",

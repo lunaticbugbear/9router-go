@@ -3,10 +3,12 @@ package db
 import (
 	json "encoding/json/v2"
 	"fmt"
+	"sort"
 	"strings"
 
 	"9router/proxy/internal/bounty"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/modelalias"
 	"9router/proxy/internal/persona"
 )
 
@@ -57,6 +59,10 @@ type SettingsData struct {
 	// scope, only the operator's own text is stored — never request bodies or
 	// model responses.
 	Personas map[string]persona.Persona `json:"personas,omitempty"`
+	// ModelBindings pair a model name with a target model and/or a persona —
+	// the mechanism behind names like "glm-5.3-mod". Distinct from the kv alias
+	// table, which can only rename.
+	ModelBindings map[string]modelalias.Binding `json:"modelBindings,omitempty"`
 	// PersonasEnabled turns the persona plane on. It is off by default: a stored
 	// persona does not affect any request until the operator enables it or names
 	// it explicitly with the X-9Router-Persona header.
@@ -84,6 +90,7 @@ func DefaultSettings() *SettingsData {
 		},
 		BountyProfiles: make(map[string]bounty.Profile),
 		Personas:       make(map[string]persona.Persona),
+		ModelBindings:  make(map[string]modelalias.Binding),
 	}
 }
 
@@ -267,6 +274,32 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 	// requests.
 	if v := handlerutil.GetString(raw, "defaultPersona"); v != "" {
 		s.DefaultPersona = v
+	}
+
+	// Model aliases are decoded like personas: one malformed row must not erase
+	// unrelated settings, and the map key is authoritative, so a record whose
+	// nested id drifted is still usable under its real key.
+	if bindingsRaw, ok := raw["modelBindings"].(map[string]any); ok {
+		bindings := make(map[string]modelalias.Binding, len(bindingsRaw))
+		for id, value := range bindingsRaw {
+			if !modelalias.ValidID(id) {
+				continue
+			}
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				continue
+			}
+			var b modelalias.Binding
+			if err := json.Unmarshal(encoded, &b); err != nil {
+				continue
+			}
+			b.ID = id
+			if b.Validate() != nil {
+				continue
+			}
+			bindings[id] = b
+		}
+		s.ModelBindings = bindings
 	}
 
 	// Capacity adapter pools (vision, audioInput, etc.)
@@ -527,4 +560,87 @@ func (r *Repo) PersonasBindingDefault(id string) (bool, error) {
 		return false, err
 	}
 	return strings.TrimSpace(settings.DefaultPersona) == id, nil
+}
+
+// SetModelBinding saves one binding without clobbering unrelated settings.
+//
+// The binding is validated here as well as in the handler so a programmatic
+// caller cannot store a key no request can ever select.
+func (r *Repo) SetModelBinding(b modelalias.Binding) error {
+	if err := b.Validate(); err != nil {
+		return err
+	}
+	raw, err := r.GetSettingsRaw()
+	if err != nil || raw == nil {
+		raw = make(map[string]any)
+	}
+	bindings, _ := raw["modelBindings"].(map[string]any)
+	if bindings == nil {
+		bindings = make(map[string]any)
+	}
+	bindings[b.ID] = b
+	return r.UpdateSettingsRaw(map[string]any{"modelBindings": bindings})
+}
+
+// DeleteModelBinding removes one binding. Requests naming it afterwards are
+// treated as naming an unknown model unless the kv alias table still renames it,
+// which is an explicit outcome rather than a silent fallback.
+func (r *Repo) DeleteModelBinding(id string) error {
+	raw, err := r.GetSettingsRaw()
+	if err != nil || raw == nil {
+		return nil
+	}
+	bindings, _ := raw["modelBindings"].(map[string]any)
+	if bindings == nil {
+		return nil
+	}
+	delete(bindings, id)
+	return r.UpdateSettingsRaw(map[string]any{"modelBindings": bindings})
+}
+
+// GetModelBinding returns one binding, if configured. The kv alias table has its
+// own GetModelAlias for plain renames; this one carries the persona as well.
+func (r *Repo) GetModelBinding(id string) (*modelalias.Binding, error) {
+	settings, err := r.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	b, ok := settings.ModelBindings[id]
+	if !ok {
+		return nil, nil
+	}
+	return &b, nil
+}
+
+// ModelBindingsReferencingPersona lists binding ids bound to a persona. The
+// persona delete handler uses it to warn that removing a persona breaks those
+// bindings.
+func (r *Repo) ModelBindingsReferencingPersona(personaID string) ([]string, error) {
+	settings, err := r.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	var ids []string
+	for id, b := range settings.ModelBindings {
+		if b.Persona == personaID {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids, nil
+}
+
+// PersonaIDs returns every stored persona id, sorted. It exists so callers can
+// render a stable list without reaching into the settings map and re-sorting.
+func (r *Repo) PersonaIDs() ([]string, error) {
+	settings, err := r.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(settings.Personas))
+	for id := range settings.Personas {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, nil
 }

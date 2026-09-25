@@ -25,7 +25,7 @@ func TestAttachBountyProfile_ExplicitRequestSelection(t *testing.T) {
 	h := NewChatHandler(repo)
 
 	plain := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	ctx, err := h.attachPromptPlane(context.Background(), plain)
+	ctx, err := h.attachPromptPlane(context.Background(), plain, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -35,7 +35,7 @@ func TestAttachBountyProfile_ExplicitRequestSelection(t *testing.T) {
 
 	selected := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	selected.Header.Set(BountyProfileHeader, "h1-demo")
-	ctx, err = h.attachPromptPlane(context.Background(), selected)
+	ctx, err = h.attachPromptPlane(context.Background(), selected, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,7 +51,7 @@ func TestAttachBountyProfile_UnknownProfileRefused(t *testing.T) {
 	h := NewChatHandler(db.NewRepo(database))
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	r.Header.Set(BountyProfileHeader, "not-configured")
-	if _, err := h.attachPromptPlane(context.Background(), r); err == nil || !strings.Contains(err.Error(), "unknown bounty profile") {
+	if _, err := h.attachPromptPlane(context.Background(), r, ""); err == nil || !strings.Contains(err.Error(), "unknown bounty profile") {
 		t.Fatalf("unknown profile must fail clearly, got %v", err)
 	}
 }

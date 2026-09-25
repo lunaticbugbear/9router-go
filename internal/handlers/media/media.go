@@ -148,7 +148,7 @@ func (h *MediaHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
-	plane, err := h.ChatH.PromptPlaneForRequest(r)
+	plane, err := h.ChatH.PromptPlaneForRequest(r, modelOfResponsesRequest(body))
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
@@ -167,6 +167,20 @@ func (h *MediaHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 // from the top-level instructions field, so a body that cannot carry them —
 // including form-encoded bodies, which are not JSON — fails here rather than
 // being forwarded without the operator-declared context.
+// modelOfResponsesRequest extracts the model field from a Responses-format body.
+// The plane resolver needs the model name to look up a model binding, and the
+// body has already been read by this point, so the name is taken from the parsed
+// bytes rather than by re-reading the request.
+func modelOfResponsesRequest(body []byte) string {
+	var probe struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(body, &probe); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(probe.Model)
+}
+
 func applyPromptPlaneResponses(body []byte, plane chat.PromptPlane) ([]byte, error) {
 	if plane.Empty() {
 		return body, nil

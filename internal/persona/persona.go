@@ -30,7 +30,14 @@ const (
 	MaxPersonaNameLength = 120
 	// MaxSystemPromptLength bounds the operator's system-prompt text in BYTES,
 	// not runes: the bound must match what the wire payload actually carries.
-	MaxSystemPromptLength = 8000
+	//
+	// The bound is generous on purpose. An agent persona is a real document —
+	// operating doctrine, evidence standards, report formats — and the ones this
+	// feature exists to match run to tens of thousands of tokens. A tighter limit
+	// would reject exactly the personas the binding feature is for, so the size is
+	// bounded to keep a stored record sane rather than to second-guess the
+	// operator's prompt engineering.
+	MaxSystemPromptLength = 262144
 )
 
 var idPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)

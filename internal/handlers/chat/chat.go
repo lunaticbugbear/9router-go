@@ -53,7 +53,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 	// context is carried into routing below, so each piece is loaded at most
 	// once per request.
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
-	ctx, err = h.attachPromptPlane(ctx, r)
+	ctx, err = h.attachPromptPlane(ctx, r, reqBody.Model)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return

@@ -188,6 +188,20 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	// Strip [1m] context marker before resolution (PR #3691)
 	modelStr = stripModelContextMarker(modelStr)
 
+	// 0. Operator model binding: the name may be bound to another model. This
+	// runs before every other branch because a binding is an explicit operator
+	// instruction about what the name means, and it must win over the catalog —
+	// otherwise binding a name that also exists as a model would silently do
+	// nothing. The binding's persona is resolved separately, at request level.
+	if h.Repo != nil {
+		if binding, err := h.Repo.GetModelBinding(modelStr); err == nil && binding != nil {
+			if target, ok := binding.ResolveTarget(); ok {
+				log.Info("binding", "model name rewritten", "from", modelStr, "to", target, "persona", binding.Persona)
+				modelStr = target
+			}
+		}
+	}
+
 	// 1. Standard format: "provider/model"
 	if strings.Contains(modelStr, "/") {
 		parts := strings.SplitN(modelStr, "/", 2)
@@ -222,34 +236,34 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	if h.Repo != nil {
 		aliasTarget, err := h.Repo.GetModelAlias(modelStr)
 		if err == nil && aliasTarget != "" {
-		if strings.Contains(aliasTarget, "/") {
-			parts := strings.SplitN(aliasTarget, "/", 2)
-			prefix := parts[0]
-			model := parts[1]
+			if strings.Contains(aliasTarget, "/") {
+				parts := strings.SplitN(aliasTarget, "/", 2)
+				prefix := parts[0]
+				model := parts[1]
 
-			if info := h.resolvePrefixProvider(prefix, model); info != nil {
-				return info, nil
-			}
-
-			provider := resolveProviderAlias(prefix)
-			if provider != prefix {
-				if info := h.resolvePrefixProvider(provider, model); info != nil {
+				if info := h.resolvePrefixProvider(prefix, model); info != nil {
 					return info, nil
 				}
-				if h.Repo != nil {
-					if node, _, err := h.Repo.GetProviderNodeByPrefix(prefix); err == nil && node != nil {
-						conns, _ := h.Repo.GetProviderConnections(provider, true)
-						if len(conns) == 0 {
-							return &ModelInfo{Provider: node.ID, Model: model}, nil
+
+				provider := resolveProviderAlias(prefix)
+				if provider != prefix {
+					if info := h.resolvePrefixProvider(provider, model); info != nil {
+						return info, nil
+					}
+					if h.Repo != nil {
+						if node, _, err := h.Repo.GetProviderNodeByPrefix(prefix); err == nil && node != nil {
+							conns, _ := h.Repo.GetProviderConnections(provider, true)
+							if len(conns) == 0 {
+								return &ModelInfo{Provider: node.ID, Model: model}, nil
+							}
 						}
 					}
 				}
+				return &ModelInfo{
+					Provider: provider,
+					Model:    model,
+				}, nil
 			}
-			return &ModelInfo{
-				Provider: provider,
-				Model:    model,
-			}, nil
-		}
 		}
 	}
 
@@ -259,35 +273,34 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		return &ModelInfo{Provider: "codex", Model: "codex-auto-review"}, nil
 	}
 
-
 	// 3. Check if it's a combo name
 	if h.Repo != nil {
 		combo, err := h.Repo.GetComboByName(modelStr)
 		if err == nil && combo != nil && combo.Models != "" {
-		var modelStrings []string
-		if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
-			// Flatten nested combos into concrete leaves so rotation covers
-			// every reachable model (a nested combo entry used to collapse to
-			// its first leaf, so combo-wombo -> free-tier never rotated).
-			flattened, flatErr := h.flattenComboModels(modelStrings)
-			if flatErr != nil {
-				return nil, flatErr
-			}
-			if len(flattened) > 0 {
-				firstInfo := h.resolveModelEntry(flattened[0])
-				if firstInfo == nil {
-					firstInfo, _ = h.resolveModel(flattened[0])
+			var modelStrings []string
+			if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
+				// Flatten nested combos into concrete leaves so rotation covers
+				// every reachable model (a nested combo entry used to collapse to
+				// its first leaf, so combo-wombo -> free-tier never rotated).
+				flattened, flatErr := h.flattenComboModels(modelStrings)
+				if flatErr != nil {
+					return nil, flatErr
 				}
-				if firstInfo != nil {
-					firstInfo.ComboModels = flattened
-					strat, sticky, judge := h.resolveComboRouting(combo.Name, combo.Strategy)
-					firstInfo.Strategy = strat
-					firstInfo.StickyLimit = sticky
-					firstInfo.JudgeModel = judge
-					return firstInfo, nil
+				if len(flattened) > 0 {
+					firstInfo := h.resolveModelEntry(flattened[0])
+					if firstInfo == nil {
+						firstInfo, _ = h.resolveModel(flattened[0])
+					}
+					if firstInfo != nil {
+						firstInfo.ComboModels = flattened
+						strat, sticky, judge := h.resolveComboRouting(combo.Name, combo.Strategy)
+						firstInfo.Strategy = strat
+						firstInfo.StickyLimit = sticky
+						firstInfo.JudgeModel = judge
+						return firstInfo, nil
+					}
 				}
 			}
-		}
 		}
 	}
 
@@ -382,4 +395,3 @@ func (h *ChatHandler) resolveComboRouting(comboName string, fallbackStrategy str
 
 	return strategy, stickyLimit, ""
 }
-
