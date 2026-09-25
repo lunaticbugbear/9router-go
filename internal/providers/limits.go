@@ -17,9 +17,6 @@ const (
 	LimitSourceKnown LimitSource = "known"
 	// LimitSourceUnknownModel means no rule matched and the fallback was used.
 	LimitSourceUnknownModel LimitSource = "unknown-model"
-	// LimitSourceUnknownProvider means the model could not be attributed to a
-	// provider in the catalog.
-	LimitSourceUnknownProvider LimitSource = "unknown-provider"
 )
 
 // ModelLimit explains one resolved context window.
