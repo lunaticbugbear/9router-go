@@ -120,6 +120,19 @@ func main() {
 					},
 				},
 			},
+			{
+				Name:  "doctor",
+				Usage: "Diagnose the install: database schema and gateway health",
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "port", Value: 0, Usage: "gateway port to probe (default: PORT env, else 20130)"},
+				},
+				Action: runDoctor,
+			},
+			{
+				Name:   "init-db",
+				Usage:  "Create the canonical database schema (idempotent; existing rows untouched)",
+				Action: runInitDB,
+			},
 		},
 		Action: runServer,
 	}
