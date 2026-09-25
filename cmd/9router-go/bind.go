@@ -55,7 +55,9 @@ Every request naming the bound model pays the persona's token cost, exactly like
 the -mod variants this mirrors: the text is prepended on every call.`,
 		Flags: []cli.Flag{
 			&cli.StringFlag{Name: "target", Usage: "model this name resolves to (omit to keep the name as-is)"},
-			&cli.StringFlag{Name: "persona-id", Usage: "persona id to attach (defaults to the bound name)"},
+			&cli.StringFlag{Name: "persona-id", Usage: "persona id to attach (defaults to the bound name; omit to keep the existing one)"},
+			&cli.BoolFlag{Name: "clear-persona", Usage: "remove the persona from an existing binding"},
+			&cli.BoolFlag{Name: "clear-target", Usage: "remove the model rewrite from an existing binding"},
 			&cli.StringFlag{Name: "persona-file", Usage: "path to a file whose contents become the persona text"},
 			&cli.StringFlag{Name: "persona-text", Usage: "persona text inline (use --persona-file for long personas)"},
 			&cli.BoolFlag{Name: "replace", Usage: "replace the caller's system prompt instead of appending below it"},
@@ -147,21 +149,45 @@ func runBind(cCtx *cli.Context) error {
 
 	// An existing persona is required when the binding attaches one, so a typo in
 	// the id is reported now rather than as a rejected request later.
+	//
+	// An update that names no persona keeps the one already bound. Without this,
+	// a plain `bind --target X <name>` would silently drop the persona, turning a
+	// rename into a prompt-context removal — the opposite of what was asked.
+	// `--clear-persona` is how an operator removes it on purpose.
 	attached := ""
+	personaNamed := cCtx.String("persona-id") != "" || file != "" || inline != "" || cCtx.Bool("clear-persona")
+	if existing, err := repo.GetModelBinding(name); err == nil && existing != nil && !personaNamed {
+		attached = existing.Persona
+	}
+	if cCtx.Bool("clear-persona") {
+		attached = ""
+	}
 	if stored, err := repo.GetPersona(personaID); err != nil {
 		return err
 	} else if stored != nil {
 		attached = personaID
 	} else if file != "" || inline != "" {
 		return fmt.Errorf("persona %q was not stored", personaID)
-	} else {
+	} else if attached == "" {
 		fmt.Printf("Note: no persona %q is stored, so this binding carries no prompt context.\n", personaID)
 		fmt.Printf("      Attach one with: 9router bind --persona-file ./persona.md --persona-id %s %s\n", personaID, name)
 	}
 
+	// Each field is preserved unless the operator named it, so an update that
+	// changes one thing cannot silently discard the other. `--clear-target` and
+	// `--clear-persona` are the explicit ways to remove one.
+	target := strings.TrimSpace(cCtx.String("target"))
+	if target == "" && !cCtx.Bool("clear-target") {
+		if existing, err := repo.GetModelBinding(name); err == nil && existing != nil {
+			target = existing.Target
+		}
+	}
+	if cCtx.Bool("clear-target") {
+		target = ""
+	}
 	binding := modelalias.Binding{
 		ID:      name,
-		Target:  strings.TrimSpace(cCtx.String("target")),
+		Target:  target,
 		Persona: attached,
 		Enabled: !cCtx.Bool("disable"),
 	}
