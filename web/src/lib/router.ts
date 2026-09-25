@@ -20,6 +20,7 @@ export type ActiveTab =
   | 'terminal'
   | 'settings'
   | 'keys'
+  | 'bounty'
 
 export const TAB_ROUTES: Record<ActiveTab, string> = {
   login: '/login',
@@ -43,6 +44,7 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   terminal: '/dashboard/console-log',
   settings: '/dashboard/profile',
   keys: '/dashboard/cli-tools',
+  bounty: '/dashboard/bounty',
 }
 
 const ROUTE_TO_TAB: Record<string, ActiveTab> = {
@@ -114,6 +116,10 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   '/media/web': 'media-web',
   '/media': 'media-web',
 
+  // bounty assist
+  '/dashboard/bounty': 'bounty',
+  '/bounty': 'bounty',
+
   // proxy pools
   '/dashboard/proxy-pools': 'proxy-pools',
   '/proxy-pools': 'proxy-pools',
@@ -167,6 +173,7 @@ export function pathToTab(pathname: string): ActiveTab {
   if (normalized.includes('usage') || normalized.includes('analytics')) return 'analytics'
   if (normalized.includes('combos')) return 'combos'
   if (normalized.includes('providers') || normalized.includes('connections')) return 'connections'
+  if (normalized.includes('bounty')) return 'bounty'
   if (normalized.includes('profile') || normalized.includes('settings')) return 'settings'
   return 'endpoint'
 }

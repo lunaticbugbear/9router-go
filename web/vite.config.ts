@@ -7,11 +7,11 @@ export default defineConfig({
   plugins: [svelte(), tailwindcss()],
   server: {
     proxy: {
-      '/api': 'http://localhost:20130',
-      '/v1': 'http://localhost:20130',
-      '/usage': 'http://localhost:20130',
-      '/translator': 'http://localhost:20130',
-      '/debug': 'http://localhost:20130',
+      '/api': 'http://localhost:20131',
+      '/v1': 'http://localhost:20131',
+      '/usage': 'http://localhost:20131',
+      '/translator': 'http://localhost:20131',
+      '/debug': 'http://localhost:20131',
     },
   },
 })

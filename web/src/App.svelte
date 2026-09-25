@@ -31,6 +31,7 @@
   import TerminalView from './components/TerminalView.svelte'
   import TokenSaverView from './components/TokenSaverView.svelte'
   import TopBar from './components/TopBar.svelte'
+  import BountyAssistView from './components/BountyAssistView.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
   import { PROVIDER_CATALOG } from './lib/providers'
   import { getIconPath } from './components/connections/types'
@@ -326,6 +327,8 @@
               <CliToolsView {apiKeys} onRefresh={loadData} />
             {:else if activeTab === 'keys'}
               <ApiKeysView {apiKeys} onRefresh={loadData} />
+            {:else if activeTab === 'bounty'}
+              <BountyAssistView />
             {:else if activeTab === 'media-embedding'}
               {#if selectedMedia && selectedMediaCatalogItem}
                 <MediaProviderDetail

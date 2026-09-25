@@ -128,6 +128,46 @@ curl http://localhost:20130/v1/chat/completions \
 
 Same base URL + key works for Claude Code (`ANTHROPIC_BASE_URL=.../v1`), Cursor/Cline/Continue, or `omp` (`baseUrl: .../v1`, `api: openai-completions`).
 
+## Bug Bounty Assist (`/dashboard/bounty`)
+
+Declares the authorization context for a bug-bounty program so an assistant can tell an in-scope engagement apart from an unscoped request. This **may** reduce *false* refusals; the effect is not measured here, and it is **prompt context only**.
+
+> **Scope note** — 9router-go is an AI gateway, not a scanner. A profile does not technically constrain what a model or client requests, does not bypass provider safety policies, and does not retrieve hidden system prompts or ship exploit payloads. The injected context explicitly retains the provider's own policy as authoritative.
+
+**1. Save a profile** in `/dashboard/bounty` (scope-rules UI), or via the API:
+
+```bash
+curl -X PUT http://localhost:20130/api/bounty/profiles/h1-example \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"program": "Example program",
+       "programUrl": "https://hackerone.com/example",
+       "inScope": ["api.example.test", "app.example.test"],
+       "outOfScope": ["billing.example.test"],
+       "rules": "No destructive testing."}'
+```
+
+At least one in-scope asset is required. A profile whose combined context exceeds the 12,000-**byte** budget is rejected rather than silently truncated, so the closing safety instruction is never cut off. The budget is a UTF-8 byte limit, not a character count: non-ASCII program names or rules consume several bytes per character, so fewer than 12,000 characters fit when the text is not ASCII.
+
+**2. Select it per request** with the `X-9Router-Bounty-Profile` header. Nothing is applied by default — one program's scope never leaks into another request.
+
+```bash
+curl http://localhost:20130/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "X-9Router-Bounty-Profile: h1-example" \
+  -d '{"model": "ag/gemini-3.8-flash-high",
+       "messages": [{"role": "user", "content": "Analyze this finding in scope."}]}'
+```
+
+Works across OpenAI chat (`messages[]`), Claude Messages (`system`), and Responses (top-level `instructions`, with caller instructions preserved and `input[]` left untouched), including combo/fallback paths. The selector header is consumed locally and **never forwarded upstream**.
+
+An unknown or deleted profile id fails explicitly with `400` (`unknown bounty profile "<id>"`), including on synthetic warmup/naming requests — there is no silent fallback.
+
+Absent or null `instructions` is supported — the scope is written into that field, and existing caller instructions are preserved. A selected request whose body cannot carry the scope is also rejected with `400` before anything is forwarded, rather than sent upstream without the operator-declared scope: malformed or non-object JSON (including JSON `null`), or an existing `instructions` holding a value other than a string or `null`.
+
+**3. Report helpers** (`GET /api/bounty/helpers`, `POST /api/bounty/helpers/build`, and the in-dashboard preview) return bounded scope-check / safe-plan / triage / report-planning prompts. Operator evidence is returned to the caller only: helpers never send evidence to a provider and never persist it. Profiles store declared scope and rules only — requests, responses and evidence are not stored.
+
 ## Combo Strategies
 
 **fallback** (default) → try in order · **round-robin** → rotate start · **sticky** → pin N turns then rotate · **fusion** → parallel panel, quorum + straggler grace, judge synthesizes. Image/PDF requests auto-float capable models to front.

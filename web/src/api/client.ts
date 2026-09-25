@@ -44,6 +44,24 @@ export interface ProviderStrategyConfig {
   [key: string]: unknown
 }
 
+export interface BountyProfile {
+  id: string
+  program: string
+  programUrl?: string
+  inScope: string[]
+  outOfScope?: string[]
+  rules?: string
+  customContext?: string
+}
+
+export type BountyHelperKind = 'scope-check' | 'safe-plan' | 'triage' | 'report'
+
+export interface BountyHelper {
+  id: BountyHelperKind
+  title: string
+  description: string
+}
+
 export interface Settings {
   requireApiKey?: boolean
   tunnelDashboardAccess?: boolean
@@ -531,6 +549,29 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ model }),
     }),
+
+  // Bug bounty: program scope context is applied only when a client explicitly
+  // sends X-9Router-Bounty-Profile. Evidence/helper prompts are returned to the
+  // browser and are not persisted or sent to a provider by these endpoints.
+  getBountyProfiles: () => request<{ profiles: BountyProfile[] }>('/api/bounty/profiles'),
+  putBountyProfile: (profile: BountyProfile) =>
+    request<{ success: boolean; profile: BountyProfile }>(`/api/bounty/profiles/${encodeURIComponent(profile.id)}`, {
+      method: 'PUT', body: JSON.stringify(profile),
+    }),
+  deleteBountyProfile: (id: string) =>
+    request<{ success: boolean; deleted: string }>(`/api/bounty/profiles/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    }),
+  getBountyPromptPreview: (id: string) =>
+    request<{ profile: string; header: string; context: string; stored: boolean }>(
+      `/api/bounty/prompt-preview?profile=${encodeURIComponent(id)}`
+    ),
+  getBountyHelpers: () => request<{ helpers: BountyHelper[] }>('/api/bounty/helpers'),
+  buildBountyHelper: (profileId: string, kind: BountyHelperKind, evidence: string) =>
+    request<{ profile: string; kind: BountyHelperKind; prompt: string; persisted: boolean }>(
+      '/api/bounty/helpers/build',
+      { method: 'POST', body: JSON.stringify({ profileId, kind, evidence }) }
+    ),
 
   // Settings
   getSettings: () => request<Settings>('/api/settings'),
