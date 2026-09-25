@@ -91,16 +91,41 @@ go build -o 9router-go ./cmd/9router-go/
 ```bash
 # Run (proxy + dashboard on :20130, auto-locates ~/.9router/db/data.sqlite)
 ./9router-go
-# -> dashboard: http://localhost:20130
 
-# Or specify custom port or database path:
+# A bare run behaves like the original 9router CLI: it waits for the gateway to
+# become healthy, prints the ready banner, and (in a terminal) shows a menu:
+#
+#   🚀 9router-go v1.9.0
+#   Server: http://localhost:20130
+#   Dashboard: http://localhost:20130/dashboard
+#
+#     1) Web UI (Open in Browser)
+#     2) Terminal/Go server logs
+#     3) Exit
+#
+# The gateway never opens a browser by itself, in any mode. The Dashboard URL
+# printed above is how you reach the UI; menu option 1 is the only action that
+# launches a browser, and only because you asked for it. Selecting 3 shuts the
+# gateway down gracefully. When stdin is not a terminal (CI, nohup, Docker) the
+# menu is skipped and the process simply waits for SIGINT/SIGTERM, draining
+# in-flight requests — no menu, no browser.
+
+# Custom port / bind address:
+./9router-go --port 20131
+./9router-go --host 127.0.0.1 --port 20131
+
+# Equivalent env forms:
 PORT=20131 ./9router-go
-# or using flags:
-./9router-go --port 20131 --db-path ~/.9router/db/data.sqlite
+HOST=127.0.0.1 PORT=20131 ./9router-go
 
 # Verify server health:
 curl http://localhost:20130/health
 ```
+
+Flags: `--port` (default: `PORT` env, else `20130`) and `--host` (default:
+`HOST` env; empty binds all interfaces). Existing flags `--rtk`, `--caveman`,
+`--ponytail`, `--auto-update`, `--no-injection-guard` are unchanged, and the
+`version`, `update`, and `mitm` subcommands are unaffected by the launcher.
 
 > **Windows Defender / SmartScreen flags the `.exe`?** Release binaries are
 > unsigned, so a fresh release can trip a heuristic false positive (the

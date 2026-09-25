@@ -5,22 +5,32 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/signal"
 	"runtime"
-	"syscall"
 	"time"
 
 	"github.com/urfave/cli/v2"
 	"go.uber.org/fx"
 
 	"9router/proxy/internal/app"
+	"9router/proxy/internal/config"
 	"9router/proxy/internal/updater"
 )
+
 func main() {
 	app := &cli.App{
 		Name:  "9router-go",
 		Usage: "AI API proxy gateway with token saver features",
 		Flags: []cli.Flag{
+			&cli.IntFlag{
+				Name:  "port",
+				Value: 0,
+				Usage: "port for the gateway to listen on (default: PORT env, else 20130)",
+			},
+			&cli.StringFlag{
+				Name:  "host",
+				Value: "",
+				Usage: "bind address for the gateway (default: HOST env; empty binds all interfaces)",
+			},
 			&cli.BoolFlag{
 				Name:  "rtk",
 				Value: os.Getenv("RTK_ENABLED") != "false",
@@ -118,6 +128,17 @@ func main() {
 	}
 }
 
+// shut is the process-wide stop signal: the first SIGINT/SIGTERM (or the TTY
+// menu's Exit) closes shut.Done() for every observer at once.
+var shut = newShutdownTrigger()
+
+// stopApp drains the fx app within the same 20s bound as before.
+func stopApp(fxApp *fx.App) error {
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer stopCancel()
+	return fxApp.Stop(stopCtx)
+}
+
 func runServer(cCtx *cli.Context) error {
 	if logPath := os.Getenv("LOG_FILE"); logPath != "" {
 		logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -129,6 +150,10 @@ func runServer(cCtx *cli.Context) error {
 		}
 	}
 
+	// Launcher flags are projected into the environment before config is read, so
+	// the existing viper path (PORT/HOST) is the only config mechanism involved.
+	applyLauncherEnv(cCtx.Int("port"), cCtx.String("host"))
+
 	cliParams := app.NewCLIParams(cCtx)
 
 	fxApp := fx.New(
@@ -137,26 +162,32 @@ func runServer(cCtx *cli.Context) error {
 		app.DefaultFxLogger(),
 	)
 
+	// Arm the signal handler before starting fx: a stop request that arrives
+	// mid-startup must not be lost.
+	shut.Arm(nil)
+
 	startCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 	if err := fxApp.Start(startCtx); err != nil {
 		return err
 	}
 
-	signals := make(chan os.Signal, 2)
-	signal.Notify(signals, os.Interrupt, syscall.SIGTERM)
+	port := config.LoadConfig().Port
+	opts := launcherOptions{Port: port, Out: os.Stdout, In: os.Stdin, Shutdown: shut}
 
-	<-signals // first signal → begin graceful shutdown
+	if isTTY(os.Stdin) {
+		// Ready banner + menu. A clean menu exit (choice 3) returns nil and we
+		// stop the app; EOF or a read error leaves the menu and we fall through
+		// to the plain signal-driven babysitting loop below.
+		if err := runTTYLauncher(opts, updater.CurrentVersion); err == nil {
+			return stopApp(fxApp)
+		}
+	} else if waitForHealthy(cCtx.Context, port, 30*time.Second) {
+		// Print the ready banner (and the Dashboard URL) once healthy. No menu
+		// and no browser: a non-interactive run just babysits the gateway.
+		fmt.Fprint(os.Stdout, banner(updater.CurrentVersion, port))
+	}
 
-	// A second signal force-quits immediately (e.g. a stream stuck mid-drain).
-	go func() {
-		<-signals
-		fmt.Fprintln(os.Stdout, "\n  Force quitting...")
-		os.Exit(1)
-	}()
-
-	stopCtx, stopCancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer stopCancel()
-	return fxApp.Stop(stopCtx)
+	<-shut.Done() // first stop request → begin graceful shutdown
+	return stopApp(fxApp)
 }
-
