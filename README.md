@@ -92,23 +92,24 @@ go build -o 9router-go ./cmd/9router-go/
 # Run (proxy + dashboard on :20130, auto-locates ~/.9router/db/data.sqlite)
 ./9router-go
 
-# A bare run behaves like the original 9router CLI: it waits for the gateway to
-# become healthy, prints the ready banner, and (in a terminal) shows a menu:
+# A bare run waits for the gateway to become healthy, prints a compact status
+# banner, then shows one menu in a terminal. Actions leave their results visible
+# and return to the prompt without repainting the entire menu:
 #
-#   🚀 9router-go v1.9.0
-#   Server: http://localhost:20130
-#   Dashboard: http://localhost:20130/dashboard
+#   🚀 9router-go v1.9.0  READY
+#   Server     http://localhost:20130
+#   Dashboard  http://localhost:20130/dashboard
 #
 #     1) Web UI (Open in Browser)
 #     2) Terminal/Go server logs
-#     3) Exit
+#     3) Persona loader
+#     4) Exit
 #
-# The gateway never opens a browser by itself, in any mode. The Dashboard URL
-# printed above is how you reach the UI; menu option 1 is the only action that
-# launches a browser, and only because you asked for it. Selecting 3 shuts the
-# gateway down gracefully. When stdin is not a terminal (CI, nohup, Docker) the
-# menu is skipped and the process simply waits for SIGINT/SIGTERM, draining
-# in-flight requests — no menu, no browser.
+# The gateway NEVER opens a browser by itself. Only menu choice 1 does that;
+# choice 4 shuts it down gracefully. When stdin is not a terminal (CI, nohup,
+# Docker), the menu is skipped and the process waits for SIGINT/SIGTERM instead.
+# Color is added only when stdout is a TTY, NO_COLOR is unset and TERM is neither
+# empty nor "dumb". Piped output stays plain, with no cursor-control escapes.
 
 # Custom port / bind address:
 ./9router-go --port 20131

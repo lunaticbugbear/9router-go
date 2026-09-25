@@ -114,7 +114,11 @@ func personaListLine(index int, p persona.Persona, isDefault bool) string {
 	if p.AppendExisting {
 		mode = "append"
 	}
-	return fmt.Sprintf("%s%d) %s (%s, %d bytes)\n", marker, index, p.ID, mode, p.AdditionLength())
+	label := ""
+	if isDefault {
+		label = "  [default]"
+	}
+	return fmt.Sprintf("%s%d) %s (%s, %d bytes)%s\n", marker, index, p.ID, mode, p.AdditionLength(), label)
 }
 
 // sortedPersonaIDs returns stored persona keys in a stable display order.
@@ -131,14 +135,11 @@ func sortedPersonaIDs(store PersonaStore) ([]string, *db.SettingsData, error) {
 	return ids, settings, nil
 }
 
-// personaSubmenuText is the fixed submenu help block.
+// personaSubmenuText is a compact legend printed once on submenu entry. Later
+// actions report their outcomes and refresh the status/list without erasing text.
 func personaSubmenuText() string {
-	return "\nPersona loader\n" +
-		"  t) Toggle persona plane on/off\n" +
-		"  d <number>) Set the default persona\n" +
-		"  n) Clear the default persona\n" +
-		"  c <id>) Create a persona from this terminal\n" +
-		"  b) Back\n"
+	return "\n  Persona loader\n  ──────────────────────────────────────────────────────\n" +
+		"  t toggle   d <number> default   n clear   c <id> create   b back\n"
 }
 
 // runPersonaSubmenu drives the persona menu until the operator backs out. It
@@ -154,26 +155,29 @@ func runPersonaSubmenu(opts launcherOptions, src *menuSource, out io.Writer) (st
 		fmt.Fprintln(out, "Persona storage is unavailable; manage personas from the dashboard.")
 		return false
 	}
-
+	fmt.Fprint(out, personaSubmenuText())
+	refresh := true
 	for {
 		ids, settings, err := sortedPersonaIDs(store)
 		if err != nil {
-			fmt.Fprintf(out, "Failed to read personas: %v\n", err)
+			fmt.Fprintln(out, terminalColor(out, fmt.Sprintf("Failed to read personas: %v", err), "31"))
 			return false
 		}
-		printPersonaPlane(out, ids, settings)
-
-		fmt.Fprint(out, personaSubmenuText())
+		if refresh {
+			printPersonaPlane(out, ids, settings)
+			refresh = false
+		}
 		line, stop, err := src.readPrompt("Persona> ", out)
 		if err != nil || stop {
 			return stop
 		}
+		fmt.Fprintln(out)
 		action := parsePersonaMenuLine(line)
-		// The create path needs two more lines, so it reads through the same
-		// source rather than reaching for stdin itself.
+		// Creation reads its additional lines through the same shared source.
 		if done, stop := applyPersonaMenuAction(store, ids, settings, action, src, out); done || stop {
 			return stop
 		}
+		refresh = action.Kind == personaMenuTogglePlane || action.Kind == personaMenuPickDefault || action.Kind == personaMenuPickDefaultNone || action.Kind == personaMenuCreate
 	}
 }
 
@@ -192,14 +196,14 @@ func applyPersonaMenuAction(store PersonaStore, ids []string, settings *db.Setti
 		// out-of-range number is refused rather than clamped onto another
 		// persona.
 		if action.Index < 1 || action.Index > len(ids) {
-			fmt.Fprintln(out, "No persona at that number.")
+			fmt.Fprintln(out, terminalColor(out, "No persona at that number.", "31"))
 			return false, false
 		}
 		setPersonaPlane(store, settings.PersonasEnabled, ids[action.Index-1], out)
 	case personaMenuCreate:
 		return false, createPersona(store, action.Text, src, out)
 	default:
-		fmt.Fprintln(out, "Unknown choice.")
+		fmt.Fprintln(out, terminalColor(out, "Unknown choice.", "33"))
 	}
 	return false, false
 }
@@ -214,7 +218,12 @@ func printPersonaPlane(out io.Writer, ids []string, settings *db.SettingsData) {
 	if defaultID == "" {
 		defaultID = "none"
 	}
-	fmt.Fprintf(out, "\nPersona plane: %s   Default: %s\n", state, defaultID)
+	status := fmt.Sprintf("Persona plane: %s   Default: %s", state, defaultID)
+	color := "33"
+	if settings.PersonasEnabled {
+		color = "32"
+	}
+	fmt.Fprintf(out, "\n%s\n", terminalColor(out, status, color))
 	if len(ids) == 0 {
 		fmt.Fprintln(out, "  No personas stored yet. Add one from the dashboard or with 'c <id>'.")
 		return
@@ -228,7 +237,7 @@ func printPersonaPlane(out io.Writer, ids []string, settings *db.SettingsData) {
 // validation the dashboard uses applies here too, and reports the outcome.
 func setPersonaPlane(store PersonaStore, enabled bool, defaultPersona string, out io.Writer) {
 	if err := store.SetPersonasPlane(enabled, defaultPersona); err != nil {
-		fmt.Fprintf(out, "Not saved: %v\n", err)
+		fmt.Fprintln(out, terminalColor(out, fmt.Sprintf("Not saved: %v", err), "31"))
 		return
 	}
 	state := "disabled"

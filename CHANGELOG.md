@@ -3,6 +3,12 @@
 
 ## [Unreleased]
 
+### Terminal Launcher Presentation
+
+- The ready banner now groups version, health state, Server and Dashboard URLs, plus the two local selector-header names. It does not launch a browser.
+- The four-choice menu is shown once per entry; later actions return to a short prompt while results and validation errors remain readable in scrollback. The persona submenu shows its command legend once and refreshes its state/list only after changes. No cursor-positioning or screen-erasing sequences are emitted.
+- ANSI color is used only for interactive stdout when `NO_COLOR` is unset and `TERM` is neither empty nor `dumb`. Redirected output remains plain text.
+
 ### 🎭 Persona Plane: System-Prompt Intercept (Local Feature)
 
 - New local feature: `internal/persona` (store + bounded renderer), `internal/handlers/chat/prompt_plane.go`, `internal/handlers/dashboard/persona.go`, and a CLI loader menu. An operator saves system-prompt additions and selects one per request with the `X-9Router-Persona` header, or applies a default while the plane is enabled. Both `personasEnabled` and `defaultPersona` are **off/empty by default**, so a stored persona changes nothing until the operator turns the plane on.

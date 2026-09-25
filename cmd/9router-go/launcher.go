@@ -81,14 +81,17 @@ func waitForHealthy(ctx context.Context, port int, timeout time.Duration) bool {
 	}
 }
 
-// banner is the exact block the shell wrapper printed: leading blank line, then
-// the rocket line, server URL, and dashboard URL.
+// banner gives the gateway a readable, stable startup summary. It never opens
+// a browser; the URL is printed so the operator can choose when to use it.
 func banner(version string, port int) string {
-	return fmt.Sprintf("\n🚀 9router-go v%s\nServer: %s\nDashboard: %s\n",
-		version, serverURL(port), dashboardURL(port))
+	return fmt.Sprintf("\n%s  %s\n  %s\n  Server     %s\n  Dashboard  %s\n  Selectors  X-9Router-Persona · X-9Router-Bounty-Profile\n",
+		terminalColor(os.Stdout, "🚀 9router-go v"+version, "1"),
+		terminalColor(os.Stdout, "READY", "32"),
+		strings.Repeat("─", 54), serverURL(port), dashboardURL(port))
 }
 
-// menuText is the TTY menu, matching the validated launcher wrapper wording.
+// menuText is shown on entry, not after every action. Results and errors remain
+// in the terminal scrollback rather than getting erased by cursor control.
 func menuText() string {
 	return "\n  1) Web UI (Open in Browser)\n  2) Terminal/Go server logs\n  3) Persona loader\n  4) Exit\n"
 }
@@ -267,6 +270,7 @@ func (s *menuSource) stopping() bool {
 func runInteractiveMenu(opts launcherOptions) error {
 	out := opts.Out
 	src := newMenuSource(opts.In, opts.shutdownOrIdle())
+	fmt.Fprint(out, menuText())
 
 	for {
 		if src.stopping() {
@@ -275,7 +279,6 @@ func runInteractiveMenu(opts launcherOptions) error {
 			return nil
 		}
 
-		fmt.Fprint(out, menuText())
 		fmt.Fprint(out, "Select [1-4]: ")
 
 		line, stop, err := src.readLine()
@@ -284,16 +287,16 @@ func runInteractiveMenu(opts launcherOptions) error {
 		}
 		if stop {
 			fmt.Fprintln(out)
-			fmt.Fprintln(out, "Shutting down the gateway...")
+			fmt.Fprintln(out, terminalColor(out, "Shutting down the gateway...", "33"))
 			return nil
 		}
+		fmt.Fprintln(out)
 
 		switch parseMenuChoice(line) {
 		case menuChoiceOpenWeb:
 			openDashboard(dashboardURL(opts.Port), out)
 		case menuChoiceLogs:
-			fmt.Fprintln(out)
-			fmt.Fprintln(out, "The gateway logs stream in this terminal, above this menu.")
+			fmt.Fprintln(out, "The gateway logs stream in this terminal.")
 			fmt.Fprintf(out, "Server: %s\n", serverURL(opts.Port))
 			fmt.Fprintf(out, "Dashboard: %s\n", dashboardURL(opts.Port))
 			fmt.Fprintf(out, "Health: %s\n", healthURL(opts.Port))
@@ -314,7 +317,7 @@ func runInteractiveMenu(opts launcherOptions) error {
 			opts.shutdownOrIdle().Request()
 			return nil
 		default:
-			fmt.Fprintln(out, "Please choose 1, 2, 3 or 4.")
+			fmt.Fprintln(out, terminalColor(out, "Please choose 1, 2, 3 or 4.", "33"))
 		}
 		// A keystroke typed while a choice was being handled must not be lost:
 		// keep one line aside for the next prompt.

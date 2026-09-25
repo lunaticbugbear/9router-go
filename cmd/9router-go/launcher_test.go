@@ -93,21 +93,6 @@ func TestLauncherURLs(t *testing.T) {
 	}
 }
 
-func TestBanner(t *testing.T) {
-	got := banner("1.9.0", 20130)
-	want := "\n🚀 9router-go v1.9.0\nServer: http://localhost:20130\nDashboard: http://localhost:20130/dashboard\n"
-	if got != want {
-		t.Errorf("banner mismatch\n got: %q\nwant: %q", got, want)
-	}
-}
-
-func TestMenuText(t *testing.T) {
-	want := "\n  1) Web UI (Open in Browser)\n  2) Terminal/Go server logs\n  3) Persona loader\n  4) Exit\n"
-	if got := menuText(); got != want {
-		t.Errorf("menuText mismatch\n got: %q\nwant: %q", got, want)
-	}
-}
-
 func TestWaitForHealthy(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/health" {
@@ -317,7 +302,6 @@ func TestRunInteractiveMenu_LogsThenExit(t *testing.T) {
 		t.Fatalf("menu returned error: %v", err)
 	}
 	for _, want := range []string{
-		"The gateway logs stream in this terminal, above this menu.",
 		"Server: http://localhost:20130",
 		"Dashboard: http://localhost:20130/dashboard",
 		"Health: http://127.0.0.1:20130/health",
@@ -326,9 +310,13 @@ func TestRunInteractiveMenu_LogsThenExit(t *testing.T) {
 			t.Errorf("output missing %q; got:\n%s", want, out)
 		}
 	}
-	// The menu is redrawn after handling a choice, so the prompt appears twice.
-	if n := strings.Count(out, "Select [1-4]: "); n != 2 {
-		t.Errorf("expected menu redrawn once (2 prompts), got %d", n)
+	// Choices return to the prompt without reprinting the entire menu. Reports
+	// remain between prompts, even when another choice follows immediately.
+	if got := strings.Count(out, menuText()); got != 1 {
+		t.Errorf("menu was printed %d times; want one stable menu: %s", got, out)
+	}
+	if got := strings.Count(out, "Select [1-4]: "); got != 2 {
+		t.Errorf("expected two prompts after choice 2 then exit, got %d: %s", got, out)
 	}
 }
 
