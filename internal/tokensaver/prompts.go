@@ -345,6 +345,157 @@ func InjectSystemPromptClaudeStrict(body []byte, prompt string) ([]byte, bool, e
 	return out, true, nil
 }
 
+// ReplaceChatSystem overwrites the system instructions in an OpenAI
+// chat-completions body with prompt. It is the explicit-replacement counterpart
+// of InjectSystemPromptStrict and never appends: an existing system/developer
+// message is swapped out, and when the body carries none a new system message
+// is inserted at position 0.
+//
+// Returns (body, false, nil) when the body's first system message already holds
+// exactly this prompt, so repeated application stays idempotent. Returns
+// ErrUninjectable for the same bodies as InjectSystemPromptStrict — a
+// replacement must not silently degrade into an append.
+func ReplaceChatSystem(body []byte, prompt string) ([]byte, bool, error) {
+	req, ok := decodeRequestObject(body)
+	if !ok {
+		return body, false, ErrUninjectable
+	}
+	changed, ok := replaceChatSystem(req, prompt)
+	if !ok {
+		return body, false, ErrUninjectable
+	}
+	if !changed {
+		return body, false, nil
+	}
+	return marshalRequest(body, req)
+}
+
+// ReplaceClaudeSystem overwrites the top-level "system" field of a Claude
+// Messages body with prompt. The Anthropic API forbids role:"system" inside
+// messages[], so that field is the only home for system instructions.
+func ReplaceClaudeSystem(body []byte, prompt string) ([]byte, bool, error) {
+	req, ok := decodeRequestObject(body)
+	if !ok {
+		return body, false, ErrUninjectable
+	}
+	if toMessageArray(req["messages"]) == nil {
+		return body, false, ErrUninjectable
+	}
+	isPrompt, ok := systemFieldIsPrompt(req["system"], prompt)
+	if !ok {
+		return body, false, ErrUninjectable
+	}
+	if isPrompt {
+		return body, false, nil
+	}
+	req["system"] = prompt
+	return marshalRequest(body, req)
+}
+
+// ReplaceResponsesInstructions overwrites the OpenAI Responses API top-level
+// "instructions" field with prompt. input[] is never modified: a role:"system"
+// item there is invalid for that protocol.
+func ReplaceResponsesInstructions(body []byte, prompt string) ([]byte, bool, error) {
+	req, ok := decodeRequestObject(body)
+	if !ok {
+		return body, false, ErrUninjectable
+	}
+	if instructions, isStr := req["instructions"].(string); (req["instructions"] == nil || isStr) && instructions == prompt {
+		return body, false, nil
+	}
+	if req["instructions"] != nil {
+		if _, isStr := req["instructions"].(string); !isStr {
+			return body, false, ErrUninjectable
+		}
+	}
+	req["instructions"] = prompt
+	return marshalRequest(body, req)
+}
+
+// replaceChatSystem swaps the first system/developer message's content for
+// prompt, inserting a new leading system message when the body has none. It
+// reports whether the body changed and whether it was injectable at all.
+func replaceChatSystem(req map[string]any, prompt string) (changed, ok bool) {
+	arr := toMessageArray(req["messages"])
+	if arr == nil {
+		return false, false
+	}
+	clone := make([]any, len(arr))
+	copy(clone, arr)
+
+	for i, m := range clone {
+		msg, isMap := m.(map[string]any)
+		if !isMap {
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "system" && role != "developer" {
+			continue
+		}
+		if content, isStr := msg["content"].(string); isStr && content == prompt {
+			return false, true
+		}
+		msg["content"] = prompt
+		delete(msg, "content_parts")
+		clone[i] = msg
+		req["messages"] = clone
+		return true, true
+	}
+
+	req["messages"] = append([]any{map[string]any{"role": "system", "content": prompt}}, clone...)
+	return true, true
+}
+
+// systemFieldIsPrompt reports whether an existing Claude "system" field already
+// holds prompt, and whether that field is a type the replacement can overwrite
+// (absent, null, a string, or text blocks). Any other type is uninjectable.
+func systemFieldIsPrompt(system any, prompt string) (isPrompt, ok bool) {
+	switch sys := system.(type) {
+	case nil:
+		return false, true
+	case string:
+		return sys == prompt, true
+	case []any:
+		return len(sys) == 1 && blockTextEquals(sys[0], prompt), true
+	default:
+		return false, false
+	}
+}
+
+// blockTextEquals reports whether a Claude system text block carries exactly
+// text. A non-block entry or a differently-typed content block is not a match.
+func blockTextEquals(block any, text string) bool {
+	bMap, isMap := block.(map[string]any)
+	if !isMap || bMap["type"] != "text" {
+		return false
+	}
+	t, isStr := bMap["text"].(string)
+	return isStr && t == text
+}
+
+// decodeRequestObject parses body into a mutable JSON object. It reports false
+// for a non-object body, including JSON `null`, which would panic on write.
+func decodeRequestObject(body []byte) (map[string]any, bool) {
+	req := map[string]any{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return nil, false
+	}
+	if req == nil {
+		return nil, false
+	}
+	return req, true
+}
+
+// marshalRequest re-encodes a mutated request, falling back to the original body
+// with ErrUninjectable when the object cannot be serialized.
+func marshalRequest(original []byte, req map[string]any) ([]byte, bool, error) {
+	out, err := json.Marshal(req)
+	if err != nil {
+		return original, false, ErrUninjectable
+	}
+	return out, true, nil
+}
+
 // contentPartsContain reports whether a non-string message content value (e.g.
 // an OpenAI text-parts array) already carries prompt, so repeated injection
 // stays idempotent instead of prepending a second scope message.

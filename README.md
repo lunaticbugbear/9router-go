@@ -193,6 +193,52 @@ Absent or null `instructions` is supported — the scope is written into that fi
 
 **3. Report helpers** (`GET /api/bounty/helpers`, `POST /api/bounty/helpers/build`, and the in-dashboard preview) return bounded scope-check / safe-plan / triage / report-planning prompts. Operator evidence is returned to the caller only: helpers never send evidence to a provider and never persist it. Profiles store declared scope and rules only — requests, responses and evidence are not stored.
 
+## Persona Plane (`/dashboard/personas`)
+
+Stores operator-declared system-prompt additions and applies them to requests through the gateway. A persona is your own instruction text — tone, format, domain framing, house conventions — spliced into the system prompt in the field the target protocol actually reads, so you do not have to repeat it in every client.
+
+> **Boundary note** — a persona is transparent operator context, **not** a policy override. The rendered block is framed by fixed marker lines naming the text as operator-declared and stating that the provider's own safety policies remain authoritative. 9router-go does not extract hidden system prompts, and a persona cannot remove the guard lines.
+
+**1. Save a persona** in `/dashboard/personas` or via the API:
+
+```bash
+curl -X PUT http://localhost:20130/api/personas/terse \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -d '{"name": "Terse replies",
+       "systemPrompt": "Answer in one sentence. Prefer concrete nouns over hedging.",
+       "appendExisting": true}'
+```
+
+`appendExisting: true` adds the persona **below** whatever system content the caller already sent, preserving caller instructions that are unrelated to the persona (tool policy, response format, language). Omitting it means **replace**: the persona becomes the whole system prompt. Replacement is an explicit operator choice, because silently dropping a caller's system prompt is a footgun.
+
+The stored prompt is bounded at 8,000 **bytes** (UTF-8 bytes, not characters — non-ASCII text consumes several bytes per character) and a prompt over the budget is rejected rather than truncated, so the closing guard line can never be cut off.
+
+**2. Select it per request** with the `X-9Router-Persona` header, or set a default while the plane is enabled.
+
+```bash
+curl http://localhost:20130/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer sk-your-api-key" \
+  -H "X-9Router-Persona: terse" \
+  -d '{"model": "ag/gemini-3.8-flash-high",
+       "messages": [{"role": "user", "content": "Explain this stack trace."}]}'
+```
+
+Resolution order, first match wins:
+
+1. **Request header** (`X-9Router-Persona`) — always honored, even while the plane is disabled, so a client that names a persona receives it or a clear error, never a silent no-op.
+2. **`defaultPersona`** — applied only while **`personasEnabled`** is on. **Both settings are off by default**, so a stored persona changes nothing until you enable it.
+3. **None** — the body is forwarded untouched.
+
+The default can be set from the CLI (**`3) Persona loader`**) or via `PUT /api/personas/plane`; the plane endpoints are separate from `/api/settings` so a stale settings payload cannot disable the plane or detach its default. Setting a default that names an unstored persona is refused, so a typo cannot break every later request.
+
+An unknown or deleted persona id fails explicitly with `400` (`unknown persona "<id>"`) before anything is forwarded — including stale header selections and a `defaultPersona` left dangling by a delete. A selected request whose body cannot carry the persona is likewise rejected with `400` before any upstream call, rather than forwarded without the instructions that were named.
+
+The persona is applied in each protocol's real system field (OpenAI chat `messages[]`, Anthropic Messages top-level `system`, Responses top-level `instructions`), is **idempotent** (re-applying the same persona never duplicates the block), and is **never sticky** — a later request without the header does not inherit the previous selection. The selector header is consumed locally and **never forwarded upstream** (chat, Messages, Responses, combo/fallback, and both media forward paths, with a final strip after provider `StaticHeaders`). A persona and a bounty profile can be selected together; both blocks appear exactly once, persona first.
+
+The CLI loader (`3)` from the launcher menu) lists stored personas with the current default marked and each row's mode (`append`/`replace`) and byte size, and can toggle the plane, set or clear the default, or create a persona from the terminal. It writes through the same settings row the gateway reloads per request — no restart needed. The launcher still never opens a browser on its own; the printed Dashboard URL is how you reach the UI.
+
 ## Combo Strategies
 
 **fallback** (default) → try in order · **round-robin** → rotate start · **sticky** → pin N turns then rotate · **fusion** → parallel panel, quorum + straggler grace, judge synthesizes. Image/PDF requests auto-float capable models to front.

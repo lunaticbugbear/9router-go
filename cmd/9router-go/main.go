@@ -13,6 +13,7 @@ import (
 
 	"9router/proxy/internal/app"
 	"9router/proxy/internal/config"
+	"9router/proxy/internal/db"
 	"9router/proxy/internal/updater"
 )
 
@@ -156,9 +157,15 @@ func runServer(cCtx *cli.Context) error {
 
 	cliParams := app.NewCLIParams(cCtx)
 
+	// The CLI persona loader reads and writes the same settings row the gateway
+	// reloads per request. Capturing the shared handle from the fx container
+	// keeps one connection to one database file instead of opening a second one.
+	var dbHandle *db.Handle
 	fxApp := fx.New(
 		app.AppModule,
+		app.DatabaseHandleModule,
 		fx.Replace(cliParams),
+		fx.Populate(&dbHandle),
 		app.DefaultFxLogger(),
 	)
 
@@ -174,6 +181,11 @@ func runServer(cCtx *cli.Context) error {
 
 	port := config.LoadConfig().Port
 	opts := launcherOptions{Port: port, Out: os.Stdout, In: os.Stdin, Shutdown: shut}
+	if dbHandle != nil {
+		// The loader writes through the shared settings row, which the gateway
+		// reloads on every request, so no invalidation step is needed.
+		opts.Personas = dbHandle.Repo()
+	}
 
 	if isTTY(os.Stdin) {
 		// Ready banner + menu. A clean menu exit (choice 3) returns nil and we

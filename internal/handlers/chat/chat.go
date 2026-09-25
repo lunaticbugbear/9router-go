@@ -45,14 +45,15 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	// Attach the explicitly selected bounty profile once. A synthetic request
+	// Attach the resolved local prompt context once. A synthetic request
 	// (Claude Code naming, warmup, keepalive) is answered locally and never
 	// reaches a provider, but the selection must still be resolved first: without
-	// this, a stale or deleted profile id would appear to be accepted while the
-	// declared scope was never applied anywhere. The resolved context is carried
-	// into routing below, so the profile is loaded at most once per request.
+	// this, a stale or deleted persona/profile id would appear to be accepted
+	// while the declared instructions were never applied anywhere. The resolved
+	// context is carried into routing below, so each piece is loaded at most
+	// once per request.
 	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
-	ctx, err = h.attachBountyProfile(ctx, r)
+	ctx, err = h.attachPromptPlane(ctx, r)
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return

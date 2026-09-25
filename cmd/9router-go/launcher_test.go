@@ -60,7 +60,8 @@ func TestParseMenuChoice(t *testing.T) {
 	}{
 		{"one", "1", menuChoiceOpenWeb},
 		{"two", "2", menuChoiceLogs},
-		{"three", "3", menuChoiceExit},
+		{"three", "3", menuChoicePersona},
+		{"four", "4", menuChoiceExit},
 		{"newline trimmed", "2\n", menuChoiceLogs},
 		{"surrounding spaces", "  1  \n", menuChoiceOpenWeb},
 		{"blank line is not a choice", "\n", menuChoiceUnknown},
@@ -101,7 +102,7 @@ func TestBanner(t *testing.T) {
 }
 
 func TestMenuText(t *testing.T) {
-	want := "\n  1) Web UI (Open in Browser)\n  2) Terminal/Go server logs\n  3) Exit\n"
+	want := "\n  1) Web UI (Open in Browser)\n  2) Terminal/Go server logs\n  3) Persona loader\n  4) Exit\n"
 	if got := menuText(); got != want {
 		t.Errorf("menuText mismatch\n got: %q\nwant: %q", got, want)
 	}
@@ -192,7 +193,7 @@ func TestRunTTYLauncher_NeverOpensBrowserOnLaunch(t *testing.T) {
 	// visible here as a log line.
 	recorder := withFakeBrowserOpener(t)
 	var out strings.Builder
-	opts := launcherOptions{Port: 20130, Out: &out, In: strings.NewReader("3\n")}
+	opts := launcherOptions{Port: 20130, Out: &out, In: strings.NewReader("4\n")}
 	if err := runTTYLauncher(opts, "1.9.0"); err != nil {
 		t.Fatalf("runTTYLauncher: %v", err)
 	}
@@ -212,10 +213,10 @@ func TestRunInteractiveMenu_OnlyChoiceOneOpensBrowser(t *testing.T) {
 		input    string
 		wantOpen bool
 	}{
-		{"choice 1 opens", "1\n3\n", true},
-		{"choice 2 does not", "2\n3\n", false},
-		{"choice 3 does not", "3\n", false},
-		{"invalid input does not", "9\n3\n", false},
+		{"choice 1 opens", "1\n4\n", true},
+		{"choice 2 does not", "2\n4\n", false},
+		{"choice 3 does not", "3\nb\n4\n", false},
+		{"invalid input does not", "9\n4\n", false},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -299,11 +300,11 @@ func runMenu(t *testing.T, in string) (string, error) {
 }
 
 func TestRunInteractiveMenu_Exit(t *testing.T) {
-	out, err := runMenu(t, "3\n")
+	out, err := runMenu(t, "4\n")
 	if err != nil {
 		t.Fatalf("exit choice returned error: %v", err)
 	}
-	for _, want := range []string{"Select [1-3]: ", "Shutting down the gateway..."} {
+	for _, want := range []string{"Select [1-4]: ", "Shutting down the gateway..."} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q; got:\n%s", want, out)
 		}
@@ -311,7 +312,7 @@ func TestRunInteractiveMenu_Exit(t *testing.T) {
 }
 
 func TestRunInteractiveMenu_LogsThenExit(t *testing.T) {
-	out, err := runMenu(t, "2\n3\n")
+	out, err := runMenu(t, "2\n4\n")
 	if err != nil {
 		t.Fatalf("menu returned error: %v", err)
 	}
@@ -326,17 +327,17 @@ func TestRunInteractiveMenu_LogsThenExit(t *testing.T) {
 		}
 	}
 	// The menu is redrawn after handling a choice, so the prompt appears twice.
-	if n := strings.Count(out, "Select [1-3]: "); n != 2 {
+	if n := strings.Count(out, "Select [1-4]: "); n != 2 {
 		t.Errorf("expected menu redrawn once (2 prompts), got %d", n)
 	}
 }
 
 func TestRunInteractiveMenu_RejectsUnknownInput(t *testing.T) {
-	out, err := runMenu(t, "9\n3\n")
+	out, err := runMenu(t, "9\n4\n")
 	if err != nil {
 		t.Fatalf("menu returned error: %v", err)
 	}
-	if !strings.Contains(out, "Please choose 1, 2 or 3.") {
+	if !strings.Contains(out, "Please choose 1, 2, 3 or 4.") {
 		t.Errorf("expected rejection message; got:\n%s", out)
 	}
 }
@@ -357,11 +358,11 @@ func TestRunInteractiveMenu_WebChoiceIsHandled(t *testing.T) {
 	// pin the loop's control flow with a stub that cannot touch the desktop.
 	withFakeBrowserOpener(t)
 	var out strings.Builder
-	opts := launcherOptions{Port: 20130, Out: &out, In: strings.NewReader("1\n3\n")}
+	opts := launcherOptions{Port: 20130, Out: &out, In: strings.NewReader("1\n4\n")}
 	if err := runInteractiveMenu(opts); err != nil {
 		t.Fatalf("menu returned error: %v", err)
 	}
-	if n := strings.Count(out.String(), "Select [1-3]: "); n != 2 {
+	if n := strings.Count(out.String(), "Select [1-4]: "); n != 2 {
 		t.Errorf("choice 1 did not return to the menu (prompts=%d); got:\n%s", n, out.String())
 	}
 	if !strings.Contains(out.String(), "Shutting down the gateway...") {
@@ -398,7 +399,7 @@ func TestOpenDashboard_SilentOnSuccess(t *testing.T) {
 
 func TestRunTTYLauncher_PrintsBannerAndMenu(t *testing.T) {
 	var out strings.Builder
-	opts := launcherOptions{Port: 20130, Out: &out, In: strings.NewReader("3\n")}
+	opts := launcherOptions{Port: 20130, Out: &out, In: strings.NewReader("4\n")}
 	if err := runTTYLauncher(opts, "1.9.0"); err != nil {
 		t.Fatalf("runTTYLauncher: %v", err)
 	}
@@ -484,7 +485,7 @@ func TestRunInteractiveMenu_StopRequestInterruptsPrompt(t *testing.T) {
 	}()
 	defer close(blocking.release)
 
-	waitForOutput(t, out, "Select [1-3]: ")
+	waitForOutput(t, out, "Select [1-4]: ")
 	trig.Request()
 
 	select {
@@ -505,7 +506,7 @@ func TestRunInteractiveMenu_ExitRequestsShutdown(t *testing.T) {
 	// the caller relies on Done() to know a graceful stop is wanted.
 	trig := newShutdownTrigger()
 	var out syncBuffer
-	opts := launcherOptions{Port: 20130, Out: &out, In: strings.NewReader("3\n"), Shutdown: trig}
+	opts := launcherOptions{Port: 20130, Out: &out, In: strings.NewReader("4\n"), Shutdown: trig}
 	if err := runInteractiveMenu(opts); err != nil {
 		t.Fatalf("menu returned error: %v", err)
 	}

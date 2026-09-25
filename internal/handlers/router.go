@@ -225,6 +225,20 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo) {
 	r.Get("/api/bounty/helpers", dashH.HandleGetBountyHelpers)
 	r.Post("/api/bounty/helpers/build", dashH.HandleBuildBountyHelper)
 
+	// Persona plane: operator-declared system-prompt additions. Also
+	// dashboard-only, and also inherits RequireDashboardAuth from the caller.
+	//
+	// A persona may be selected per request with the X-9Router-Persona header,
+	// or applied by default while the plane is enabled — both settings are off
+	// by default. The header is consumed locally and never forwarded upstream.
+	// The plane endpoints are separate from /api/settings so a stale settings
+	// payload cannot silently disable the plane or detach its default.
+	r.Get("/api/personas", dashH.HandleGetPersonas)
+	r.Put("/api/personas/plane", dashH.HandlePutPersonasPlane)
+	r.Get("/api/personas/preview", dashH.HandleGetPersonaPreview)
+	r.Put("/api/personas/{name}", dashH.HandlePutPersona)
+	r.Delete("/api/personas/{name}", dashH.HandleDeletePersona)
+
 	r.Get("/api/settings", dashH.HandleGetSettings)
 	r.Put("/api/settings", dashH.HandleUpdateSettings)
 	r.Patch("/api/settings", dashH.HandleUpdateSettings)

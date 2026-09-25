@@ -284,32 +284,36 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 	// alone would wrongly inject a top-level "system" the upstream ignores.
 	claudeNative := isAnthropic && (endpoint == "/v1/v1/messages" || endpoint == "/v1/messages")
 	pipedBody := h.applyTokenSavers(body, claudeNative)
-	// A profile is selected explicitly per request via
-	// X-9Router-Bounty-Profile. It adds the operator-declared authorization
-	// context to the outgoing system prompt so a provider can distinguish an
-	// in-scope bounty task from an unscoped request. This is transparent context,
-	// not a policy override: the profile tells the model which assets/rules apply,
-	// and the fixed prompt explicitly retains provider safety policies.
+	// Local prompt context is selected explicitly per request through
+	// X-9Router-Persona and/or X-9Router-Bounty-Profile. The persona carries
+	// the operator's own system instructions; the profile adds the
+	// operator-declared authorization context so a provider can distinguish an
+	// in-scope bounty task from an unscoped request. Both are transparent
+	// context, not policy overrides: each block states that the provider's own
+	// safety policies remain authoritative.
 	//
-	// The request/response body is never stored by this feature. Only the profile
-	// ID appears in the debug log, because the injected context may contain a
-	// private program scope and must not be copied into ordinary logs.
-	if profile, ok := bountyProfileFromContext(ctx); ok {
-		format := BountyWireOpenAIChat
+	// The request/response body is never stored by this feature. Only the
+	// selector ids appear in the debug log, because the injected context may
+	// contain private program scope or operator prompt text and must not be
+	// copied into ordinary logs.
+	if plane, ok := promptPlaneFromContext(ctx); ok {
+		format := PromptWireOpenAIChat
 		if claudeNative {
-			format = BountyWireClaudeMessages
+			format = PromptWireClaudeMessages
 		}
 		var changed bool
 		var injectErr error
-		pipedBody, changed, injectErr = ApplyBountyProfileToBody(pipedBody, profile, format)
+		pipedBody, changed, injectErr = ApplyPromptPlaneToBody(pipedBody, plane, format)
 		if injectErr != nil {
-			// The operator selected a profile but the outbound body cannot carry
-			// its scope. Fail loudly rather than forward a request the provider
-			// would treat as unscoped.
-			return &upstreamError{StatusCode: http.StatusBadRequest, Body: []byte(`{"error":{"message":"selected bounty profile could not be attached to this request format","type":"invalid_request_error","code":"bounty_profile_uninjectable"}}`)}
+			// The operator selected local prompt context but the outbound body
+			// cannot carry it. Fail loudly rather than forward a request the
+			// provider would treat as unscoped or persona-free.
+			return &upstreamError{StatusCode: http.StatusBadRequest, Body: []byte(`{"error":{"message":"selected persona or bounty profile could not be attached to this request format","type":"invalid_request_error","code":"prompt_plane_uninjectable"}}`)}
 		}
 		if changed {
-			log.Debug("bounty", "scope context attached to upstream request", "profile", profile.ID, "provider", provider, "model", model)
+			log.Debug("prompt-plane", "local prompt context attached to upstream request",
+				"persona", personaID(plane.Persona), "bountyProfile", bountyID(plane.Bounty),
+				"provider", provider, "model", model)
 		}
 	}
 	var claudeToolMap map[string]string

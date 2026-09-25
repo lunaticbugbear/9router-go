@@ -25,22 +25,22 @@ func TestAttachBountyProfile_ExplicitRequestSelection(t *testing.T) {
 	h := NewChatHandler(repo)
 
 	plain := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
-	ctx, err := h.attachBountyProfile(context.Background(), plain)
+	ctx, err := h.attachPromptPlane(context.Background(), plain)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := bountyProfileFromContext(ctx); ok {
+	if _, ok := promptPlaneFromContext(ctx); ok {
 		t.Fatal("a profile was applied without an explicit header")
 	}
 
 	selected := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	selected.Header.Set(BountyProfileHeader, "h1-demo")
-	ctx, err = h.attachBountyProfile(context.Background(), selected)
+	ctx, err = h.attachPromptPlane(context.Background(), selected)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, ok := bountyProfileFromContext(ctx)
-	if !ok || got.ID != "h1-demo" {
+	got, ok := promptPlaneFromContext(ctx)
+	if !ok || got.Bounty == nil || got.Bounty.ID != "h1-demo" {
 		t.Fatalf("selected profile not attached: %+v, ok=%v", got, ok)
 	}
 }
@@ -51,16 +51,16 @@ func TestAttachBountyProfile_UnknownProfileRefused(t *testing.T) {
 	h := NewChatHandler(db.NewRepo(database))
 	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
 	r.Header.Set(BountyProfileHeader, "not-configured")
-	if _, err := h.attachBountyProfile(context.Background(), r); err == nil || !strings.Contains(err.Error(), "unknown bounty profile") {
+	if _, err := h.attachPromptPlane(context.Background(), r); err == nil || !strings.Contains(err.Error(), "unknown bounty profile") {
 		t.Fatalf("unknown profile must fail clearly, got %v", err)
 	}
 }
 
-func TestApplyBountyProfileToBody_PreservesCallerAndUsesProtocolSystemField(t *testing.T) {
+func TestApplyPromptPlaneToBody_PreservesCallerAndUsesProtocolSystemField(t *testing.T) {
 	profile := bounty.Profile{ID: "p", Program: "Demo", InScope: []string{"api.demo.test"}}
 
 	openAI := []byte(`{"model":"m","messages":[{"role":"user","content":"analyze"}]}`)
-	out, changed, err := ApplyBountyProfileToBody(openAI, profile, BountyWireOpenAIChat)
+	out, changed, err := ApplyPromptPlaneToBody(openAI, PromptPlane{Bounty: &profile}, PromptWireOpenAIChat)
 	if err != nil {
 		t.Fatalf("openai injection failed: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestApplyBountyProfileToBody_PreservesCallerAndUsesProtocolSystemField(t *t
 	}
 
 	claude := []byte(`{"model":"m","messages":[{"role":"user","content":"analyze"}]}`)
-	out, changed, err = ApplyBountyProfileToBody(claude, profile, BountyWireClaudeMessages)
+	out, changed, err = ApplyPromptPlaneToBody(claude, PromptPlane{Bounty: &profile}, PromptWireClaudeMessages)
 	if err != nil {
 		t.Fatalf("claude injection failed: %v", err)
 	}
@@ -311,14 +311,14 @@ func TestSyntheticRequestDoesNotSilentlyAcceptStaleProfile(t *testing.T) {
 	}
 }
 
-// ApplyBountyProfileToBody must place the context in each protocol's real
+// ApplyPromptPlaneToBody must place the context in each protocol's real
 // system field. OpenAI chat and Anthropic Messages are covered by
-// TestApplyBountyProfileToBody_PreservesCallerAndUsesProtocolSystemField.
+// TestApplyPromptPlaneToBody_PreservesCallerAndUsesProtocolSystemField.
 // Responses must always use the top-level instructions field: `input` may be a
 // string or an array, and role:"system" items inside input[] are invalid for
 // the Responses API. A body that cannot carry instructions must error instead
 // of silently forwarding without the operator-declared scope.
-func TestApplyBountyProfileToBody_ResponsesShapes(t *testing.T) {
+func TestApplyPromptPlaneToBody_ResponsesShapes(t *testing.T) {
 	profile := bounty.Profile{ID: "p", Program: "Demo", InScope: []string{"api.demo.test"}}
 
 	cases := []struct {
@@ -333,7 +333,7 @@ func TestApplyBountyProfileToBody_ResponsesShapes(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			out, changed, err := ApplyBountyProfileToBody([]byte(tc.body), profile, BountyWireResponses)
+			out, changed, err := ApplyPromptPlaneToBody([]byte(tc.body), PromptPlane{Bounty: &profile}, PromptWireResponses)
 			if err != nil {
 				t.Fatalf("expected injectable Responses body, got error: %v", err)
 			}
@@ -363,7 +363,7 @@ func TestApplyBountyProfileToBody_ResponsesShapes(t *testing.T) {
 	}
 
 	t.Run("preserves caller instructions", func(t *testing.T) {
-		out, _, err := ApplyBountyProfileToBody([]byte(`{"model":"m","instructions":"Be brief.","input":"go"}`), profile, BountyWireResponses)
+		out, _, err := ApplyPromptPlaneToBody([]byte(`{"model":"m","instructions":"Be brief.","input":"go"}`), PromptPlane{Bounty: &profile}, PromptWireResponses)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -376,11 +376,11 @@ func TestApplyBountyProfileToBody_ResponsesShapes(t *testing.T) {
 	})
 
 	t.Run("idempotent on already-applied body", func(t *testing.T) {
-		first, _, err := ApplyBountyProfileToBody([]byte(`{"model":"m","input":"go"}`), profile, BountyWireResponses)
+		first, _, err := ApplyPromptPlaneToBody([]byte(`{"model":"m","input":"go"}`), PromptPlane{Bounty: &profile}, PromptWireResponses)
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, changed, err := ApplyBountyProfileToBody(first, profile, BountyWireResponses)
+		_, changed, err := ApplyPromptPlaneToBody(first, PromptPlane{Bounty: &profile}, PromptWireResponses)
 		if err != nil {
 			t.Fatalf("re-applying must not error: %v", err)
 		}
@@ -392,7 +392,7 @@ func TestApplyBountyProfileToBody_ResponsesShapes(t *testing.T) {
 	t.Run("uninjectable bodies error", func(t *testing.T) {
 		profile := bounty.Profile{ID: "p", Program: "Demo", InScope: []string{"api.demo.test"}}
 		for _, bad := range []string{`{invalid`, `{"model":"m","instructions":42,"input":"go"}`, `not-json`} {
-			if _, _, err := ApplyBountyProfileToBody([]byte(bad), profile, BountyWireResponses); err == nil {
+			if _, _, err := ApplyPromptPlaneToBody([]byte(bad), PromptPlane{Bounty: &profile}, PromptWireResponses); err == nil {
 				t.Fatalf("expected error for uninjectable Responses body %q", bad)
 			}
 		}

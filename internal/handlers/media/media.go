@@ -136,6 +136,10 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 }
 
 // HandleResponses handles OpenAI Responses API (/v1/responses).
+//
+// Local prompt context is resolved here, before routing, so a request carrying
+// an unknown persona or bounty profile id is rejected with 400 instead of
+// reaching a provider without the instructions it named.
 func (h *MediaHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -144,7 +148,31 @@ func (h *MediaHandler) HandleResponses(w http.ResponseWriter, r *http.Request) {
 	}
 	defer r.Body.Close()
 
+	plane, err := h.ChatH.PromptPlaneForRequest(r)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	body, err = applyPromptPlaneResponses(body, plane)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, "selected persona or bounty profile could not be attached to this request format")
+		return
+	}
+
 	h.forwardMediaRequest(w, r, body, "gpt-4o", "/responses")
+}
+
+// applyPromptPlaneResponses adds the resolved local prompt context to a
+// Responses-format body. The Responses protocol reads system instructions only
+// from the top-level instructions field, so a body that cannot carry them —
+// including form-encoded bodies, which are not JSON — fails here rather than
+// being forwarded without the operator-declared context.
+func applyPromptPlaneResponses(body []byte, plane chat.PromptPlane) ([]byte, error) {
+	if plane.Empty() {
+		return body, nil
+	}
+	out, _, err := chat.ApplyPromptPlaneToBody(body, plane, chat.PromptWireResponses)
+	return out, err
 }
 
 // HandleResponsesCompact handles compact responses.
@@ -699,8 +727,8 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			}
 			handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 			// Final guard: no header source (client copy or StaticHeaders) may
-			// leave the internal profile selector on the outbound request.
-			chat.StripBountyProfileHeader(req.Header)
+			// leave an internal selector on the outbound request.
+			chat.StripInternalSelectorHeaders(req.Header)
 			client := h.ChatH.GetClientForConnection(connData)
 			resp, err := client.Do(req)
 			if err != nil {
@@ -956,8 +984,8 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	for k, v := range providerCfg.StaticHeaders {
 		req.Header.Set(k, v)
 	}
-	// Final guard: provider StaticHeaders could reintroduce the selector.
-	chat.StripBountyProfileHeader(req.Header)
+	// Final guard: provider StaticHeaders could reintroduce a selector.
+	chat.StripInternalSelectorHeaders(req.Header)
 	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 	connIDStr := ""
 	if conn != nil {

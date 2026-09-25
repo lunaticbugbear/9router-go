@@ -2,9 +2,12 @@ package db
 
 import (
 	json "encoding/json/v2"
+	"fmt"
+	"strings"
 
 	"9router/proxy/internal/bounty"
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/persona"
 )
 
 // ComboStrategy defines routing strategy, sticky limit, and judge model for a combo.
@@ -50,6 +53,17 @@ type SettingsData struct {
 	CapacityAdapter            map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
 	// BountyProfiles store operator-declared authorization scopes. Request and response contents are not stored here.
 	BountyProfiles map[string]bounty.Profile `json:"bountyProfiles,omitempty"`
+	// Personas store operator-declared system-prompt additions. Like the bounty
+	// scope, only the operator's own text is stored — never request bodies or
+	// model responses.
+	Personas map[string]persona.Persona `json:"personas,omitempty"`
+	// PersonasEnabled turns the persona plane on. It is off by default: a stored
+	// persona does not affect any request until the operator enables it or names
+	// it explicitly with the X-9Router-Persona header.
+	PersonasEnabled bool `json:"personasEnabled,omitempty"`
+	// DefaultPersona names the persona applied when the plane is enabled and the
+	// request carries no X-9Router-Persona header.
+	DefaultPersona string `json:"defaultPersona,omitempty"`
 }
 
 // DefaultSettings returns fallback settings.
@@ -69,6 +83,7 @@ func DefaultSettings() *SettingsData {
 			"audioInput": {Enabled: true, RoundRobin: false, Models: []string{}},
 		},
 		BountyProfiles: make(map[string]bounty.Profile),
+		Personas:       make(map[string]persona.Persona),
 	}
 }
 
@@ -214,6 +229,44 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 			profiles[id] = profile
 		}
 		s.BountyProfiles = profiles
+	}
+
+	// Personas are decoded independently for the same reason as bounty profiles:
+	// one malformed record must not erase unrelated settings. The map key is
+	// authoritative and is applied BEFORE validation, so a record with a stale
+	// nested id is still usable under its real key rather than being silently
+	// dropped even though the dashboard shows it as saved.
+	if personasRaw, ok := raw["personas"].(map[string]any); ok {
+		personas := make(map[string]persona.Persona, len(personasRaw))
+		for id, value := range personasRaw {
+			if !persona.ValidPersonaID(id) {
+				continue
+			}
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				continue
+			}
+			var p persona.Persona
+			if err := json.Unmarshal(encoded, &p); err != nil {
+				continue
+			}
+			p.ID = id
+			if p.Validate() != nil {
+				continue
+			}
+			personas[id] = p
+		}
+		s.Personas = personas
+	}
+	if v, ok := raw["personasEnabled"].(bool); ok {
+		s.PersonasEnabled = v
+	}
+	// The default is kept as written even when it names a persona that is not
+	// stored: callers resolve it through GetPersona and fail closed, so the
+	// operator sees a broken selector instead of silently unpersonified
+	// requests.
+	if v := handlerutil.GetString(raw, "defaultPersona"); v != "" {
+		s.DefaultPersona = v
 	}
 
 	// Capacity adapter pools (vision, audioInput, etc.)
@@ -388,4 +441,90 @@ func (r *Repo) GetBountyProfile(id string) (*bounty.Profile, error) {
 		return nil, nil
 	}
 	return &profile, nil
+}
+
+// SetPersona saves an operator-declared persona without clobbering unrelated
+// settings. Only the operator's own prompt text is stored; request bodies and
+// model responses are never written here.
+func (r *Repo) SetPersona(p persona.Persona) error {
+	if err := p.Validate(); err != nil {
+		return err
+	}
+	raw, err := r.GetSettingsRaw()
+	if err != nil || raw == nil {
+		raw = make(map[string]any)
+	}
+	personas, _ := raw["personas"].(map[string]any)
+	if personas == nil {
+		personas = make(map[string]any)
+	}
+	personas[p.ID] = p
+	return r.UpdateSettingsRaw(map[string]any{"personas": personas})
+}
+
+// DeletePersona removes one persona. It does not retain the prompt text
+// anywhere else, and it leaves `defaultPersona` pointing at the deleted key on
+// purpose: resolution then fails closed, so the operator notices the broken
+// default instead of quietly losing the persona on every request.
+func (r *Repo) DeletePersona(id string) error {
+	raw, err := r.GetSettingsRaw()
+	if err != nil || raw == nil {
+		raw = make(map[string]any)
+	}
+	personas, _ := raw["personas"].(map[string]any)
+	if personas == nil {
+		return nil
+	}
+	delete(personas, id)
+	return r.UpdateSettingsRaw(map[string]any{"personas": personas})
+}
+
+// GetPersona returns a named persona, if configured.
+func (r *Repo) GetPersona(id string) (*persona.Persona, error) {
+	settings, err := r.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	p, ok := settings.Personas[id]
+	if !ok {
+		return nil, nil
+	}
+	return &p, nil
+}
+
+// SetPersonasPlane switches the persona plane on or off and sets its default
+// persona in one read-modify-write, so the two cannot drift apart.
+//
+// A non-empty default must name a persona that is actually stored: accepting a
+// dangling default would make every request fail closed later, which is a
+// confusing way to learn about a typo. Clearing the default is always allowed.
+func (r *Repo) SetPersonasPlane(enabled bool, defaultPersona string) error {
+	defaultPersona = strings.TrimSpace(defaultPersona)
+	if defaultPersona != "" {
+		if !persona.ValidPersonaID(defaultPersona) {
+			return fmt.Errorf("default persona id must be 1-%d letters, digits, '.', '_' or '-'", persona.MaxPersonaIDLength)
+		}
+		stored, err := r.GetPersona(defaultPersona)
+		if err != nil {
+			return err
+		}
+		if stored == nil {
+			return fmt.Errorf("unknown persona %q; store it before making it the default", defaultPersona)
+		}
+	}
+	return r.UpdateSettingsRaw(map[string]any{
+		"personasEnabled": enabled,
+		"defaultPersona":  defaultPersona,
+	})
+}
+
+// PersonasBindingDefault reports whether id is the configured default persona.
+// It lets delete handlers tell the operator their default still references the
+// key they just removed.
+func (r *Repo) PersonasBindingDefault(id string) (bool, error) {
+	settings, err := r.GetSettings()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(settings.DefaultPersona) == id, nil
 }

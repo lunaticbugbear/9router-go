@@ -15,9 +15,26 @@ type Repo struct {
 	db *sql.DB
 }
 
+// Handle carries an already-open SQLite handle for callers outside the request
+// path — currently the CLI launcher, which draws its persona menu after fx has
+// started the shared database. It exists so those callers consume the same
+// configured connection (WAL, busy_timeout) instead of opening a second one.
+type Handle struct {
+	DB *sql.DB
+}
+
 // NewRepo creates a new repository instance using the provided SQL database connection.
 func NewRepo(db *sql.DB) *Repo {
 	return &Repo{db: db}
+}
+
+// Repo builds a repository over the shared handle. It returns nil when the
+// handle is absent, which keeps a degraded menu (no database) from panicking.
+func (h *Handle) Repo() *Repo {
+	if h == nil || h.DB == nil {
+		return nil
+	}
+	return NewRepo(h.DB)
 }
 
 // RawDB returns the underlying *sql.DB connection for direct queries.

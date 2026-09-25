@@ -24,6 +24,10 @@ type launcherOptions struct {
 	// on its own", which keeps the menu usable from tests that only exercise
 	// input dispatch.
 	Shutdown *shutdownTrigger
+	// Personas is the persona store the loader menu uses. It is the shared
+	// settings repository, so an edit made here is visible to the gateway on its
+	// next request without a restart. A nil value disables the submenu.
+	Personas PersonaStore
 }
 
 // shutdownOrIdle returns the configured trigger or a fresh one that is never
@@ -86,7 +90,7 @@ func banner(version string, port int) string {
 
 // menuText is the TTY menu, matching the validated launcher wrapper wording.
 func menuText() string {
-	return "\n  1) Web UI (Open in Browser)\n  2) Terminal/Go server logs\n  3) Exit\n"
+	return "\n  1) Web UI (Open in Browser)\n  2) Terminal/Go server logs\n  3) Persona loader\n  4) Exit\n"
 }
 
 // menuChoice is the dispatch of one menu line. It is deliberately free of I/O so
@@ -101,6 +105,7 @@ const (
 	menuChoiceUnknown menuChoice = iota
 	menuChoiceOpenWeb
 	menuChoiceLogs
+	menuChoicePersona
 	menuChoiceExit
 )
 
@@ -114,6 +119,8 @@ func parseMenuChoice(raw string) menuChoice {
 	case "2":
 		return menuChoiceLogs
 	case "3":
+		return menuChoicePersona
+	case "4":
 		return menuChoiceExit
 	default:
 		return menuChoiceUnknown
@@ -159,51 +166,123 @@ func openDashboard(url string, out io.Writer) {
 	fmt.Fprintf(out, "Open the dashboard manually: %s\n", url)
 }
 
-// runInteractiveMenu drives the TTY menu loop. Returning nil means "stop the
-// server gracefully" (choice 3 or a stop request); a non-nil error means stdin
-// closed or failed, so the caller falls back to plain signal babysitting.
+// menuSource is the single stdin reader shared by the top-level menu and the
+// persona submenu.
 //
 // Stdin is read on a helper goroutine so a SIGTERM arriving while the loop sits
 // at the prompt interrupts the menu instead of being ignored until the next
-// keystroke. The goroutine is left parked on ReadString when we return — it
-// exits with the process, and the alternative (closing stdin under the reader)
-// would be worse.
-func runInteractiveMenu(opts launcherOptions) error {
-	in := bufio.NewReader(opts.In)
-	out := opts.Out
-	shutdown := opts.shutdownOrIdle()
+// keystroke. The goroutine owns the buffered reader, so NOTHING else may read
+// stdin directly: a second direct reader would race it and silently lose
+// whichever keystrokes the goroutine consumed first. Both menus therefore pull
+// lines from this source, and a line that arrives while no prompt is active is
+// held as `pending` rather than dropped.
+type menuSource struct {
+	lines    chan string
+	readErr  chan error
+	shutdown *shutdownTrigger
+	// pending holds a line consumed from the channel while no prompt was
+	// active — e.g. the operator typed ahead during startup or before a prompt
+	// was drawn. It is drained before the channel so nothing is lost.
+	pending string
+}
 
-	lines := make(chan string)
-	readErr := make(chan error, 1)
+// newMenuSource starts the reader goroutine over in.
+func newMenuSource(in io.Reader, shutdown *shutdownTrigger) *menuSource {
+	src := &menuSource{
+		lines:    make(chan string),
+		readErr:  make(chan error, 1),
+		shutdown: shutdown,
+	}
+	reader := bufio.NewReader(in)
 	go func() {
 		for {
-			line, err := in.ReadString('\n')
+			line, err := reader.ReadString('\n')
 			if err != nil {
-				readErr <- err
+				src.readErr <- err
 				return
 			}
-			lines <- line
+			src.lines <- line
 		}
 	}()
+	return src
+}
+
+// readLine returns the next line. It reports stop=true when a shutdown request
+// arrived (the caller then unwinds its loop), and errMenuStdinClosed when stdin
+// ended. A pending line is always consumed before the channel.
+func (s *menuSource) readLine() (line string, stop bool, err error) {
+	if s.pending != "" {
+		line, s.pending = s.pending, ""
+		return line, false, nil
+	}
+	select {
+	case line = <-s.lines:
+		return line, false, nil
+	case <-s.readErr:
+		return "", false, errMenuStdinClosed
+	case <-s.shutdown.Done():
+		return "", true, nil
+	}
+}
+
+// readPrompt prints a prompt and returns the next line. It exists so the
+// submenu writes its prompt through the same path the outer menu uses, keeping
+// the printed and consumed line in step.
+func (s *menuSource) readPrompt(prompt string, out io.Writer) (line string, stop bool, err error) {
+	fmt.Fprint(out, prompt)
+	return s.readLine()
+}
+
+// flushPending drains one line that arrived while no prompt was active, keeping
+// it for the next prompt instead of blocking on it. It returns true when a line
+// was captured or stdin ended.
+func (s *menuSource) flushPending() {
+	if s.pending != "" {
+		return
+	}
+	select {
+	case line := <-s.lines:
+		s.pending = line
+	default:
+	}
+}
+
+// stopping reports whether a shutdown request has arrived.
+func (s *menuSource) stopping() bool {
+	select {
+	case <-s.shutdown.Done():
+		return true
+	default:
+		return false
+	}
+}
+
+// runInteractiveMenu drives the TTY menu loop. Returning nil means "stop the
+// server gracefully" (choice 4 or a stop request); a non-nil error means stdin
+// closed or failed, so the caller falls back to plain signal babysitting.
+//
+// The reader goroutine is left parked on ReadString when we return — it exits
+// with the process, and the alternative (closing stdin under the reader) would
+// be worse.
+func runInteractiveMenu(opts launcherOptions) error {
+	out := opts.Out
+	src := newMenuSource(opts.In, opts.shutdownOrIdle())
 
 	for {
-		select {
-		case <-shutdown.Done():
+		if src.stopping() {
 			fmt.Fprintln(out)
 			fmt.Fprintln(out, "Gateway stopped.")
 			return nil
-		default:
 		}
 
 		fmt.Fprint(out, menuText())
-		fmt.Fprint(out, "Select [1-3]: ")
+		fmt.Fprint(out, "Select [1-4]: ")
 
-		var line string
-		select {
-		case line = <-lines:
-		case <-readErr:
-			return errMenuStdinClosed
-		case <-shutdown.Done():
+		line, stop, err := src.readLine()
+		if err != nil {
+			return err
+		}
+		if stop {
 			fmt.Fprintln(out)
 			fmt.Fprintln(out, "Shutting down the gateway...")
 			return nil
@@ -218,13 +297,29 @@ func runInteractiveMenu(opts launcherOptions) error {
 			fmt.Fprintf(out, "Server: %s\n", serverURL(opts.Port))
 			fmt.Fprintf(out, "Dashboard: %s\n", dashboardURL(opts.Port))
 			fmt.Fprintf(out, "Health: %s\n", healthURL(opts.Port))
+		case menuChoicePersona:
+			// The submenu runs in-process against the shared database. Stored
+			// personas are read fresh on entry, so an edit made in the dashboard
+			// meanwhile is visible without a restart. It reads through the same
+			// source, and returns stop=true if a stop request arrives while it is
+			// open.
+			if stop := runPersonaSubmenu(opts, src, out); stop {
+				fmt.Fprintln(out)
+				fmt.Fprintln(out, "Shutting down the gateway...")
+				return nil
+			}
 		case menuChoiceExit:
 			fmt.Fprintln(out)
 			fmt.Fprintln(out, "Shutting down the gateway...")
-			shutdown.Request()
+			opts.shutdownOrIdle().Request()
 			return nil
 		default:
-			fmt.Fprintln(out, "Please choose 1, 2 or 3.")
+			fmt.Fprintln(out, "Please choose 1, 2, 3 or 4.")
+		}
+		// A keystroke typed while a choice was being handled must not be lost:
+		// keep one line aside for the next prompt.
+		if !src.stopping() {
+			src.flushPending()
 		}
 	}
 }
