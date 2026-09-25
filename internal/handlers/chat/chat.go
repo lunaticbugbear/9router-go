@@ -45,6 +45,19 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	// Attach the explicitly selected bounty profile once. A synthetic request
+	// (Claude Code naming, warmup, keepalive) is answered locally and never
+	// reaches a provider, but the selection must still be resolved first: without
+	// this, a stale or deleted profile id would appear to be accepted while the
+	// declared scope was never applied anywhere. The resolved context is carried
+	// into routing below, so the profile is loaded at most once per request.
+	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx, err = h.attachBountyProfile(ctx, r)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	// Bypass synthetic requests (Claude Code naming, warmup, keepalive)
 	if handleBypassRequest(w, body, reqBody.Model, reqBody.Stream) {
 		return
@@ -56,7 +69,6 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
 	requiredCaps := DetectRequiredCapabilities(body)
 
 	if len(modelInfo.ComboModels) > 0 {
@@ -83,6 +95,7 @@ func (h *ChatHandler) HandleChatCompletions(w http.ResponseWriter, r *http.Reque
 
 	h.handleSingleModel(ctx, w, body, modelInfo, reqBody.Stream, false)
 }
+
 // handleSingleModel resolves a single ModelInfo and forwards the request upstream.
 func (h *ChatHandler) handleSingleModel(ctx context.Context, w http.ResponseWriter, body []byte, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	cw := newCommittedResponseWriter(w)
@@ -210,6 +223,7 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 
 	h.handleMessagesSingleModel(ctx, w, workingBody, modelInfo, reqBody.Stream, translateResponse)
 }
+
 // handleMessagesSingleModel forwards a translated Claude request for a single model.
 func (h *ChatHandler) handleMessagesSingleModel(ctx context.Context, w http.ResponseWriter, translatedReq map[string]any, modelInfo *ModelInfo, isStream bool, translateResponse bool) {
 	cw := newCommittedResponseWriter(w)

@@ -1,12 +1,6 @@
 package handlers
 
 import (
-	json "encoding/json/v2"
-	"github.com/go-chi/chi/v5"
-	"net/http"
-	"net/http/pprof"
-	"os"
-	"strings"
 	"9router/proxy/internal/constants"
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/chat"
@@ -18,6 +12,12 @@ import (
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/middleware"
 	"9router/proxy/web"
+	json "encoding/json/v2"
+	"github.com/go-chi/chi/v5"
+	"net/http"
+	"net/http/pprof"
+	"os"
+	"strings"
 )
 
 // Re-export TokenSaverConfig for root compatibility
@@ -210,6 +210,20 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo) {
 	r.Get("/api/models/alias", dashH.HandleGetModelAliases)
 	r.Put("/api/models/alias", dashH.HandleSetModelAlias)
 	r.Delete("/api/models/alias", dashH.HandleDeleteModelAlias)
+
+	// Bug-bounty workspace: scope profiles and prompt helpers. These routes are
+	// dashboard-only and inherit RequireDashboardAuth from the caller.
+	//
+	// The profile is stored as operator-declared scope/rules only — never request
+	// bodies or model responses. Per-request selection uses the
+	// X-9Router-Bounty-Profile header, which the chat handler consumes and never
+	// forwards upstream; helpers return copyable prompts and persist nothing.
+	r.Get("/api/bounty/profiles", dashH.HandleGetBountyProfiles)
+	r.Put("/api/bounty/profiles/{id}", dashH.HandlePutBountyProfile)
+	r.Delete("/api/bounty/profiles/{id}", dashH.HandleDeleteBountyProfile)
+	r.Get("/api/bounty/prompt-preview", dashH.HandleGetBountyPromptPreview)
+	r.Get("/api/bounty/helpers", dashH.HandleGetBountyHelpers)
+	r.Post("/api/bounty/helpers/build", dashH.HandleBuildBountyHelper)
 
 	r.Get("/api/settings", dashH.HandleGetSettings)
 	r.Put("/api/settings", dashH.HandleUpdateSettings)

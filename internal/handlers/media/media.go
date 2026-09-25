@@ -698,6 +698,9 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 				req.Header[k] = v
 			}
 			handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
+			// Final guard: no header source (client copy or StaticHeaders) may
+			// leave the internal profile selector on the outbound request.
+			chat.StripBountyProfileHeader(req.Header)
 			client := h.ChatH.GetClientForConnection(connData)
 			resp, err := client.Do(req)
 			if err != nil {
@@ -953,6 +956,8 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 	for k, v := range providerCfg.StaticHeaders {
 		req.Header.Set(k, v)
 	}
+	// Final guard: provider StaticHeaders could reintroduce the selector.
+	chat.StripBountyProfileHeader(req.Header)
 	handlerutil.SetAuthHeader(req, apiKey, providerCfg.AuthHeader, providerCfg.AuthScheme)
 	connIDStr := ""
 	if conn != nil {

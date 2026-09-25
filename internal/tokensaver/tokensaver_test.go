@@ -837,16 +837,48 @@ func TestInjectSystemPrompt_SystemRoleEmptyContent(t *testing.T) {
 
 func TestInjectSystemPrompt_SystemRoleContentNotString(t *testing.T) {
 	prompt := "fallback prompt"
+	// A number is not a valid OpenAI message content, so the tolerant injector
+	// must leave the body untouched rather than overwrite caller content.
 	in := []byte(`{"messages":[{"role":"system","content":123}]}`)
 	out, ok := InjectSystemPrompt(in, prompt)
+	if ok {
+		t.Fatal("expected false for malformed system content")
+	}
+	if string(out) != string(in) {
+		t.Errorf("body must be unchanged, got %s", out)
+	}
+}
+
+func TestInjectSystemPrompt_SystemRoleContentPartsPreserved(t *testing.T) {
+	prompt := "scope prompt"
+	in := []byte(`{"messages":[{"role":"system","content":[{"type":"text","text":"caller rules"}]},{"role":"user","content":"hi"}]}`)
+	out, ok := InjectSystemPrompt(in, prompt)
 	if !ok {
-		t.Fatal("expected true")
+		t.Fatal("expected injection for a text-parts system message")
 	}
 	var res map[string]any
-	json.Unmarshal(out, &res)
-	content, _ := res["messages"].([]any)[0].(map[string]any)["content"].(string)
-	if content != prompt {
-		t.Errorf("system content = %q, want %q", content, prompt)
+	if err := json.Unmarshal(out, &res); err != nil {
+		t.Fatal(err)
+	}
+	msgs := res["messages"].([]any)
+	if len(msgs) != 3 {
+		t.Fatalf("expected a prepended system message plus the originals, got %d messages", len(msgs))
+	}
+	if msgs[0].(map[string]any)["content"] != prompt {
+		t.Errorf("scope message not prepended: %s", out)
+	}
+	// The caller's parts message must be byte-for-byte intact.
+	parts, isParts := msgs[1].(map[string]any)["content"].([]any)
+	if !isParts || len(parts) != 1 || parts[0].(map[string]any)["text"] != "caller rules" {
+		t.Errorf("caller text-parts content was modified: %s", out)
+	}
+	if got := msgs[2].(map[string]any)["content"]; got != "hi" {
+		t.Errorf("user message changed: %v", got)
+	}
+
+	// Re-applying must be idempotent.
+	if _, again := InjectSystemPrompt(out, prompt); again {
+		t.Error("re-applying to a parts body must be a no-op")
 	}
 }
 

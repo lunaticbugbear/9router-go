@@ -3,6 +3,7 @@ package db
 import (
 	json "encoding/json/v2"
 
+	"9router/proxy/internal/bounty"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -30,23 +31,25 @@ type CapacityAdapterEntry struct {
 
 // SettingsData represents token saver, combo routing, and general settings stored in the settings table.
 type SettingsData struct {
-	RTKEnabled                 bool                        `json:"rtkEnabled"`
-	CavemanEnabled             bool                        `json:"cavemanEnabled"`
-	CavemanLevel               string                      `json:"cavemanLevel"`
-	PonytailEnabled            bool                        `json:"ponytailEnabled"`
-	PonytailLevel              string                      `json:"ponytailLevel"`
-	HeadroomUrl                string                      `json:"headroomUrl"`
-	HeadroomCodeAware          bool                        `json:"headroomCodeAware"`
-	HeadroomKompress           bool                        `json:"headroomKompress"`
-	HeadroomTimeoutMs          int                         `json:"headroomTimeoutMs"`
-	AutoUpdate                 bool                        `json:"autoUpdate"`
-	FallbackStrategy           string                      `json:"fallbackStrategy,omitempty"`
-	StickyRoundRobinLimit      int                         `json:"stickyRoundRobinLimit,omitempty"`
-	ComboStrategy              string                      `json:"comboStrategy,omitempty"`
-	ComboStickyRoundRobinLimit int                         `json:"comboStickyRoundRobinLimit,omitempty"`
-	ComboStrategies            map[string]ComboStrategy    `json:"comboStrategies,omitempty"`
-	ProviderStrategies         map[string]ProviderStrategy    `json:"providerStrategies,omitempty"`
+	RTKEnabled                 bool                            `json:"rtkEnabled"`
+	CavemanEnabled             bool                            `json:"cavemanEnabled"`
+	CavemanLevel               string                          `json:"cavemanLevel"`
+	PonytailEnabled            bool                            `json:"ponytailEnabled"`
+	PonytailLevel              string                          `json:"ponytailLevel"`
+	HeadroomUrl                string                          `json:"headroomUrl"`
+	HeadroomCodeAware          bool                            `json:"headroomCodeAware"`
+	HeadroomKompress           bool                            `json:"headroomKompress"`
+	HeadroomTimeoutMs          int                             `json:"headroomTimeoutMs"`
+	AutoUpdate                 bool                            `json:"autoUpdate"`
+	FallbackStrategy           string                          `json:"fallbackStrategy,omitempty"`
+	StickyRoundRobinLimit      int                             `json:"stickyRoundRobinLimit,omitempty"`
+	ComboStrategy              string                          `json:"comboStrategy,omitempty"`
+	ComboStickyRoundRobinLimit int                             `json:"comboStickyRoundRobinLimit,omitempty"`
+	ComboStrategies            map[string]ComboStrategy        `json:"comboStrategies,omitempty"`
+	ProviderStrategies         map[string]ProviderStrategy     `json:"providerStrategies,omitempty"`
 	CapacityAdapter            map[string]CapacityAdapterEntry `json:"capacityAdapter,omitempty"`
+	// BountyProfiles store operator-declared authorization scopes. Request and response contents are not stored here.
+	BountyProfiles map[string]bounty.Profile `json:"bountyProfiles,omitempty"`
 }
 
 // DefaultSettings returns fallback settings.
@@ -65,6 +68,7 @@ func DefaultSettings() *SettingsData {
 			"vision":     {Enabled: true, RoundRobin: false, Models: []string{"ag/gemini-3.8-flash-high"}},
 			"audioInput": {Enabled: true, RoundRobin: false, Models: []string{}},
 		},
+		BountyProfiles: make(map[string]bounty.Profile),
 	}
 }
 
@@ -180,6 +184,36 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 				s.ProviderStrategies[k] = strat
 			}
 		}
+	}
+
+	// Bounty profiles are decoded independently so a malformed profile does not
+	// erase unrelated settings such as token savers or provider strategies.
+	if profilesRaw, ok := raw["bountyProfiles"].(map[string]any); ok {
+		profiles := make(map[string]bounty.Profile, len(profilesRaw))
+		for id, value := range profilesRaw {
+			// The map key is authoritative, so a stale or mismatched id inside the
+			// record cannot make one request header select a different profile than
+			// the request named. It must be applied BEFORE validation, otherwise a
+			// record with an invalid nested id is skipped even though the key is
+			// valid — silently dropping a profile the dashboard shows as saved.
+			if !bounty.ValidProfileID(id) {
+				continue
+			}
+			encoded, err := json.Marshal(value)
+			if err != nil {
+				continue
+			}
+			var profile bounty.Profile
+			if err := json.Unmarshal(encoded, &profile); err != nil {
+				continue
+			}
+			profile.ID = id
+			if profile.Validate() != nil {
+				continue
+			}
+			profiles[id] = profile
+		}
+		s.BountyProfiles = profiles
 	}
 
 	// Capacity adapter pools (vision, audioInput, etc.)
@@ -307,4 +341,51 @@ func (r *Repo) SetComboStrategy(comboName string, strat ComboStrategy) error {
 	return r.UpdateSettingsRaw(map[string]any{
 		"comboStrategies": currentMap,
 	})
+}
+
+// SetBountyProfile saves an authorization profile without clobbering unrelated
+// settings. A profile is not a request log: only the operator-declared scope and
+// rules are stored, never prompts or responses.
+func (r *Repo) SetBountyProfile(profile bounty.Profile) error {
+	if err := profile.Validate(); err != nil {
+		return err
+	}
+	raw, err := r.GetSettingsRaw()
+	if err != nil || raw == nil {
+		raw = make(map[string]any)
+	}
+	profiles, _ := raw["bountyProfiles"].(map[string]any)
+	if profiles == nil {
+		profiles = make(map[string]any)
+	}
+	profiles[profile.ID] = profile
+	return r.UpdateSettingsRaw(map[string]any{"bountyProfiles": profiles})
+}
+
+// DeleteBountyProfile removes one scope profile. It does not retain the prompt
+// text anywhere else.
+func (r *Repo) DeleteBountyProfile(id string) error {
+	raw, err := r.GetSettingsRaw()
+	if err != nil || raw == nil {
+		raw = make(map[string]any)
+	}
+	profiles, _ := raw["bountyProfiles"].(map[string]any)
+	if profiles == nil {
+		return nil
+	}
+	delete(profiles, id)
+	return r.UpdateSettingsRaw(map[string]any{"bountyProfiles": profiles})
+}
+
+// GetBountyProfile returns a named profile, if configured.
+func (r *Repo) GetBountyProfile(id string) (*bounty.Profile, error) {
+	settings, err := r.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	profile, ok := settings.BountyProfiles[id]
+	if !ok {
+		return nil, nil
+	}
+	return &profile, nil
 }

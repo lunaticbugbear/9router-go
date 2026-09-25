@@ -2,6 +2,7 @@ package tokensaver
 
 import (
 	json "encoding/json/v2"
+	"errors"
 	"strings"
 )
 
@@ -57,82 +58,173 @@ func GetPonytailPrompt(level string) string {
 	}
 }
 
+// ErrUninjectable reports that a request body cannot carry a system prompt in
+// any wire shape the target protocol reads. Callers that must not silently
+// forward without the prompt (the bounty scope context) use it to reject the
+// request before any upstream call.
+var ErrUninjectable = errors.New("request body cannot carry a system instructions field")
+
+// mergePrompt appends prompt to an existing system value, joining with a blank
+// line, and reports whether the value already contained the prompt (in which
+// case the caller should leave the body untouched).
+func mergePrompt(existing, prompt string) (string, bool) {
+	if strings.Contains(existing, prompt) {
+		return existing, true
+	}
+	if existing == "" {
+		return prompt, false
+	}
+	return existing + "\n\n" + prompt, false
+}
+
+// mutateChatSystem applies prompt to an OpenAI chat-completions body in place.
+// It reads messages[] (and, only when allowInputFallback is set, input[] as a
+// message array) and writes back to the same key it read. It reports whether
+// the body changed and whether it was injectable at all.
+func mutateChatSystem(req map[string]any, prompt string, allowInputFallback bool) (changed, ok bool) {
+	key := "messages"
+	arr := toMessageArray(req["messages"])
+	if arr == nil && allowInputFallback {
+		key = "input"
+		arr = toMessageArray(req["input"])
+	}
+	if arr == nil {
+		return false, false
+	}
+
+	clone := make([]any, len(arr))
+	copy(clone, arr)
+
+	for i, m := range clone {
+		msg, isMap := m.(map[string]any)
+		if !isMap {
+			continue
+		}
+		role, _ := msg["role"].(string)
+		if role != "system" && role != "developer" {
+			continue
+		}
+		content, isStr := msg["content"].(string)
+		if !isStr {
+			// A valid OpenAI system message may express content as a text-parts
+			// array. Preserve it byte-for-byte and prepend a separate system
+			// message carrying the scope. Any other non-string content is a
+			// malformed message.
+			if _, isParts := msg["content"].([]any); !isParts {
+				return false, false
+			}
+			if contentPartsContain(msg["content"], prompt) {
+				return false, true
+			}
+			req[key] = append([]any{map[string]any{"role": "system", "content": prompt}}, clone...)
+			return true, true
+		}
+		merged, already := mergePrompt(content, prompt)
+		if already {
+			return false, true
+		}
+		msg["content"] = merged
+		clone[i] = msg
+		req[key] = clone
+		return true, true
+	}
+
+	req[key] = append([]any{map[string]any{"role": "system", "content": prompt}}, clone...)
+	return true, true
+}
+
+// mutateClaudeSystem applies prompt to the top-level "system" field of a Claude
+// Messages body in place. The Anthropic API forbids role:"system" inside
+// messages[], so the prompt can only live in that top-level field (string or
+// text blocks). It reports whether the body changed and whether it was
+// injectable at all.
+func mutateClaudeSystem(req map[string]any, prompt string) (changed, ok bool) {
+	switch sys := req["system"].(type) {
+	case nil:
+		req["system"] = prompt
+		return true, true
+	case string:
+		merged, already := mergePrompt(sys, prompt)
+		if already {
+			return false, true
+		}
+		req["system"] = merged
+		return true, true
+	case []any:
+		for _, block := range sys {
+			bMap, isMap := block.(map[string]any)
+			if !isMap {
+				continue
+			}
+			if t, isStr := bMap["text"].(string); isStr && strings.Contains(t, prompt) {
+				return false, true
+			}
+		}
+		req["system"] = append(sys, map[string]any{"type": "text", "text": prompt})
+		return true, true
+	default:
+		return false, false
+	}
+}
+
+// mutateResponsesInstructions applies prompt to the OpenAI Responses API
+// top-level "instructions" field in place. That field is the only
+// spec-compliant home for system instructions in this protocol; input[] is
+// never modified because a role:"system" item there is invalid. It reports
+// whether the body changed and whether it was injectable at all.
+func mutateResponsesInstructions(req map[string]any, prompt string) (changed, ok bool) {
+	switch instructions := req["instructions"].(type) {
+	case nil:
+		req["instructions"] = prompt
+		return true, true
+	case string:
+		merged, already := mergePrompt(instructions, prompt)
+		if already {
+			return false, true
+		}
+		req["instructions"] = merged
+		return true, true
+	default:
+		return false, false
+	}
+}
+
 // InjectSystemPrompt adds a system prompt to an OpenAI-format request body.
 // Handles messages[] (chat), input[] (responses), and instructions (responses string).
 // Finds existing system/developer message and appends, or inserts at position 0.
 // Returns modified body and true if any modification was made.
+//
+// This tolerant form is used by the token-saver paths, where an unshaped body is
+// simply left alone. Callers that must not drop the prompt (the bounty scope
+// context) use InjectSystemPromptStrict or InjectSystemPromptResponsesStrict.
 func InjectSystemPrompt(body []byte, prompt string) ([]byte, bool) {
 	var req map[string]any
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil || req == nil {
 		return body, false
 	}
 
-	// OpenAI Responses API: top-level instructions string field
+	// OpenAI Responses API: top-level instructions string field.
 	if instructions, ok := req["instructions"].(string); ok {
-		if strings.Contains(instructions, prompt) {
+		if merged, already := mergePrompt(instructions, prompt); already {
+			return body, false
+		} else {
+			req["instructions"] = merged
+		}
+		out, err := json.Marshal(req)
+		if err != nil {
 			return body, false
 		}
-		if instructions != "" {
-			req["instructions"] = instructions + "\n\n" + prompt
-		} else {
-			req["instructions"] = prompt
-		}
-		out, _ := json.Marshal(req)
 		return out, true
 	}
 
-	// Try messages[] first, then input[]
-	arr := toMessageArray(req["messages"])
-	if arr == nil {
-		arr = toMessageArray(req["input"])
-	}
-	if arr == nil {
+	changed, ok := mutateChatSystem(req, prompt, true)
+	if !ok || !changed {
 		return body, false
 	}
-
-	// Clone to avoid mutating original
-	clone := make([]any, len(arr))
-	copy(clone, arr)
-
-	// Find existing system or developer role message
-	for i, m := range clone {
-		msg, ok := m.(map[string]any)
-		if !ok {
-			continue
-		}
-		role, _ := msg["role"].(string)
-		if role == "system" || role == "developer" {
-			content, _ := msg["content"].(string)
-			if strings.Contains(content, prompt) {
-				return body, false
-			}
-			if content != "" {
-				msg["content"] = content + "\n\n" + prompt
-			} else {
-				msg["content"] = prompt
-			}
-			clone[i] = msg
-
-			// Determine which key to write back
-			if _, ok := req["messages"]; ok {
-				req["messages"] = clone
-			} else {
-				req["input"] = clone
-			}
-			out, _ := json.Marshal(req)
-			return out, true
-		}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body, false
 	}
-
-	// No system message: insert at position 0
-	newMsg := map[string]any{"role": "system", "content": prompt}
-	newArr := append([]any{newMsg}, clone...)
-	if _, ok := req["messages"]; ok {
-		req["messages"] = newArr
-	} else {
-		req["input"] = newArr
-	}
-	out, _ := json.Marshal(req)
 	return out, true
 }
 
@@ -143,43 +235,134 @@ func InjectSystemPrompt(body []byte, prompt string) ([]byte, bool) {
 // Returns modified body and true if any modification was made.
 func InjectSystemPromptClaude(body []byte, prompt string) ([]byte, bool) {
 	var req map[string]any
-	if err := json.Unmarshal(body, &req); err != nil {
+	if err := json.Unmarshal(body, &req); err != nil || req == nil {
 		return body, false
 	}
-
-	switch sys := req["system"].(type) {
-	case string:
-		if strings.Contains(sys, prompt) {
-			return body, false
-		}
-		if sys != "" {
-			req["system"] = sys + "\n\n" + prompt
-		} else {
-			req["system"] = prompt
-		}
-	case []any:
-		// Text blocks: skip if already present, else append a text block.
-		for _, block := range sys {
-			bMap, ok := block.(map[string]any)
-			if !ok {
-				continue
-			}
-			if t, ok := bMap["text"].(string); ok && strings.Contains(t, prompt) {
-				return body, false
-			}
-		}
-		req["system"] = append(sys, map[string]any{"type": "text", "text": prompt})
-	case nil:
-		req["system"] = prompt
-	default:
+	changed, ok := mutateClaudeSystem(req, prompt)
+	if !ok || !changed {
 		return body, false
 	}
-
 	out, err := json.Marshal(req)
 	if err != nil {
 		return body, false
 	}
 	return out, true
+}
+
+// InjectSystemPromptResponsesStrict writes prompt into the OpenAI Responses API
+// top-level "instructions" field, the only spec-compliant place for system
+// instructions in that protocol. It preserves any caller-supplied instructions
+// and never modifies input[].
+//
+// Returns (body, false, nil) when the prompt is already present, so repeated
+// application is idempotent. Returns ErrUninjectable when the body is not a JSON
+// object (including JSON `null`) or when instructions is present but not a
+// string/null.
+func InjectSystemPromptResponsesStrict(body []byte, prompt string) ([]byte, bool, error) {
+	req := map[string]any{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, false, ErrUninjectable
+	}
+	if req == nil {
+		// JSON `null` unmarshals into a nil map; writing to it would panic.
+		return body, false, ErrUninjectable
+	}
+	changed, ok := mutateResponsesInstructions(req, prompt)
+	if !ok {
+		return body, false, ErrUninjectable
+	}
+	if !changed {
+		return body, false, nil
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body, false, ErrUninjectable
+	}
+	return out, true, nil
+}
+
+// InjectSystemPromptStrict is the error-returning OpenAI chat-completions
+// injector. Chat Completions reads messages[]; input[] belongs to the Responses
+// API, so a chat request carrying input[] cannot receive the context in a field
+// the upstream would act on and is reported as ErrUninjectable.
+//
+// Returns (body, false, nil) when the prompt is already present (idempotent).
+// Returns ErrUninjectable when the body is not a JSON object, when messages[] is
+// not a message array, or when the target system message holds non-string
+// content that cannot be extended.
+func InjectSystemPromptStrict(body []byte, prompt string) ([]byte, bool, error) {
+	req := map[string]any{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, false, ErrUninjectable
+	}
+	if req == nil {
+		return body, false, ErrUninjectable
+	}
+	changed, ok := mutateChatSystem(req, prompt, false)
+	if !ok {
+		return body, false, ErrUninjectable
+	}
+	if !changed {
+		return body, false, nil
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body, false, ErrUninjectable
+	}
+	return out, true, nil
+}
+
+// InjectSystemPromptClaudeStrict is the error-returning Claude Messages
+// injector. The Anthropic API forbids role:"system" inside messages[], so the
+// prompt must go in the top-level "system" field (string or text blocks).
+//
+// Returns (body, false, nil) when the prompt is already present (idempotent).
+// Returns ErrUninjectable for a non-object body (including JSON `null`), when
+// messages[] is missing or is not a message array, or when "system" holds an
+// unsupported type — a selected profile must never be dropped silently.
+func InjectSystemPromptClaudeStrict(body []byte, prompt string) ([]byte, bool, error) {
+	req := map[string]any{}
+	if err := json.Unmarshal(body, &req); err != nil {
+		return body, false, ErrUninjectable
+	}
+	if req == nil {
+		return body, false, ErrUninjectable
+	}
+	if toMessageArray(req["messages"]) == nil {
+		return body, false, ErrUninjectable
+	}
+	changed, ok := mutateClaudeSystem(req, prompt)
+	if !ok {
+		return body, false, ErrUninjectable
+	}
+	if !changed {
+		return body, false, nil
+	}
+	out, err := json.Marshal(req)
+	if err != nil {
+		return body, false, ErrUninjectable
+	}
+	return out, true, nil
+}
+
+// contentPartsContain reports whether a non-string message content value (e.g.
+// an OpenAI text-parts array) already carries prompt, so repeated injection
+// stays idempotent instead of prepending a second scope message.
+func contentPartsContain(content any, prompt string) bool {
+	arr, ok := content.([]any)
+	if !ok {
+		return false
+	}
+	for _, part := range arr {
+		pMap, isMap := part.(map[string]any)
+		if !isMap {
+			continue
+		}
+		if t, ok := pMap["text"].(string); ok && strings.Contains(t, prompt) {
+			return true
+		}
+	}
+	return false
 }
 
 // toMessageArray extracts []any from a JSON value that might be an array.
