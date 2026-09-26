@@ -2,7 +2,10 @@ package chat
 
 import (
 	json "encoding/json/v2"
+	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/handlers/shared"
@@ -434,6 +437,101 @@ func TestFlattenComboModels_GracefulCycleRecovery(t *testing.T) {
 
 	if len(flat) != 1 || flat[0] != "antigravity/gemini-3.7-flash" {
 		t.Fatalf("expected [antigravity/gemini-3.7-flash], got %v", flat)
+	}
+}
+
+// TestResolveModel_AliasToComboToAliasIsBounded is the F3 regression test: an
+// alias whose slashless target names a stored combo whose leaf list reaches back
+// to that alias (alias "cyc" -> "cyc-combo", combo "cyc-combo" = ["cyc"]).
+//
+// Before the visited-set guard this recursed without bound — resolveModel("cyc")
+// rewrote the name to "cyc-combo", the combo branch flattened it back to the
+// leaf "cyc", and the first-leaf fallback called resolveModel("cyc") again — and
+// ended in "fatal error: stack overflow". That is unrecoverable: recover()
+// cannot intercept it, no deferred cleanup runs, and the whole gateway process
+// dies with every in-flight stream on it. The test therefore asserts a BOUNDED
+// error naming the cycle, and is run under a short -timeout so a regression
+// fails fast instead of hanging CI.
+//
+// No validation exists that could refuse this pairing at write time: aliases
+// live in kv scope modelAliases and combos in the combos table, so a check over
+// either table alone cannot see the cross-table loop. The runtime guard is what
+// makes the stored config safe.
+func TestResolveModel_AliasToComboToAliasIsBounded(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	// Alias "cyc" -> "cyc-combo" (slashless target: the alias rewrite path).
+	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('modelAliases', 'cyc', '"cyc-combo"')`); err != nil {
+		t.Fatalf("seed alias: %v", err)
+	}
+	// Combo "cyc-combo" = ["cyc"] — its leaf reaches back to the alias.
+	cycleModels, _ := json.Marshal([]string{"cyc"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-cyc', 'cyc-combo', 'fallback', ?, '2026-07-19T00:00:00Z', '2026-07-19T00:00:00Z')`, string(cycleModels)); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	h := NewChatHandler(repo)
+
+	// Bound the whole call so a regression to unbounded recursion fails here
+	// rather than hanging the suite. A correct guard returns immediately.
+	done := make(chan struct{})
+	var (
+		info *ModelInfo
+		err  error
+	)
+	go func() {
+		defer close(done)
+		info, err = h.resolveModel("cyc")
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("resolveModel on a cyclic alias/combo did not return: unbounded recursion (stack overflow is process-fatal)")
+	}
+
+	if err == nil {
+		t.Fatalf("expected a bounded cycle error, got resolution %+v", info)
+	}
+	if !errors.Is(err, errModelResolutionCycle) {
+		t.Fatalf("expected a model-resolution cycle error, got: %v", err)
+	}
+	// The error must name the cycle so an operator can find the config.
+	msg := err.Error()
+	for _, want := range []string{"cyc", "cyc-combo"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("cycle error does not name %q: %s", want, msg)
+		}
+	}
+	if !strings.Contains(msg, "->") {
+		t.Errorf("cycle error does not render the chain: %s", msg)
+	}
+	if info != nil {
+		t.Errorf("expected no ModelInfo alongside a cycle error, got %+v", info)
+	}
+
+	// A diamond (the same name on two sibling branches) is not a cycle and must
+	// still resolve: the guard tracks the active path, not every name ever seen.
+	shared, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-shared', 'shared-leaf', 'fallback', ?, '2026-07-19T00:00:00Z', '2026-07-19T00:00:00Z')`, string(shared)); err != nil {
+		t.Fatalf("seed shared combo: %v", err)
+	}
+	// combo "diamond" -> ["shared-leaf", "shared-leaf"]: the same nested combo
+	// twice, which is legitimate and must not be reported as a cycle.
+	diamond, _ := json.Marshal([]string{"shared-leaf", "shared-leaf"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-diamond', 'diamond', 'fallback', ?, '2026-07-19T00:00:00Z', '2026-07-19T00:00:00Z')`, string(diamond)); err != nil {
+		t.Fatalf("seed diamond combo: %v", err)
+	}
+	diamondInfo, diamondErr := h.resolveModel("diamond")
+	if diamondErr != nil {
+		t.Fatalf("a repeated sibling name is not a cycle, got error: %v", diamondErr)
+	}
+	if diamondInfo == nil || diamondInfo.Provider != "deepseek" {
+		t.Fatalf("diamond combo resolved to %+v, want deepseek", diamondInfo)
 	}
 }
 

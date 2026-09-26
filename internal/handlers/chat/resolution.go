@@ -2,6 +2,7 @@ package chat
 
 import (
 	json "encoding/json/v2"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -64,6 +65,66 @@ func resolveProviderAlias(alias string) string {
 	return alias
 }
 
+// errModelResolutionCycle marks a cycle the runtime resolution guard detected.
+// It is a sentinel so a caller can tell "the stored configuration loops" apart
+// from "this name has no provider" without matching on the message text.
+var errModelResolutionCycle = errors.New("model resolution cycle detected")
+
+// resolveVisits is the visited set threaded through one model-resolution
+// attempt, so a cycle in the stored configuration is bounded and reported
+// instead of recursing until the goroutine stack is exhausted.
+//
+// A stack overflow is a fatal error: recover() cannot intercept it, no deferred
+// cleanup runs, and the entire process aborts. A cycle (alias -> combo -> alias,
+// or combo -> combo) therefore used to take down the whole gateway and every
+// in-flight stream on it, rather than failing the single request that named the
+// cyclic model.
+//
+// The set is keyed by name, and the chain records the order names were entered
+// so the error can name the loop. A bare depth counter is deliberately not the
+// defense: it would cap legitimate deep nesting, and it could not tell an
+// operator which names form the cycle.
+type resolveVisits struct {
+	seen  map[string]bool
+	chain []string
+}
+
+func newResolveVisits() *resolveVisits {
+	return &resolveVisits{seen: make(map[string]bool)}
+}
+
+// enter marks name as being resolved and reports a cycle when it already is.
+func (v *resolveVisits) enter(name string) error {
+	if v.seen[name] {
+		return v.cycleError(name)
+	}
+	v.seen[name] = true
+	v.chain = append(v.chain, name)
+	return nil
+}
+
+// leave clears name once its subtree has been fully resolved, so the same name
+// can legitimately appear on two sibling branches (a diamond) without being
+// reported as a cycle. Entries are strictly nested, so the chain is a stack.
+func (v *resolveVisits) leave(name string) {
+	delete(v.seen, name)
+	for i := len(v.chain) - 1; i >= 0; i-- {
+		if v.chain[i] == name {
+			v.chain = v.chain[:i]
+			return
+		}
+	}
+}
+
+// cycleError names the names that form the loop, so an operator can find the
+// alias or combo responsible.
+func (v *resolveVisits) cycleError(name string) error {
+	chain := make([]string, 0, len(v.chain)+1)
+	chain = append(chain, v.chain...)
+	chain = append(chain, name)
+	return fmt.Errorf("%w: %s", errModelResolutionCycle, strings.Join(chain, " -> "))
+}
+
 // resolveModelEntry parses a single "provider/model" string into a ModelInfo
 // without combo or alias resolution (used when iterating combo entries).
 // If the entry has no "/" (i.e. it's a combo name), it resolves the combo
@@ -76,14 +137,34 @@ func resolveProviderAlias(alias string) string {
 // and returns nil, so the caller's resolution fails rather than silently
 // expanding.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
+	return h.resolveModelEntryGuarded(entry, newResolveVisits())
+}
+
+// resolveModelEntryGuarded is resolveModelEntry with the resolution attempt's
+// visited set threaded in, so a name that is already being resolved on this
+// path is refused instead of expanded again.
+func (h *ChatHandler) resolveModelEntryGuarded(entry string, v *resolveVisits) *ModelInfo {
 	if !strings.Contains(entry, "/") {
 		if h.Repo == nil || !h.featureFlagOn(flagRoutingCombos) {
 			return nil
 		}
+		// Enter the name before expanding it. This is the recursion point that
+		// the fusion judge path reaches (combo.go resolves the judge model
+		// straight from settings, which is never validated): a combo whose
+		// first entry is its own name used to recurse until the goroutine stack
+		// was exhausted. A stack overflow is fatal — recover() cannot intercept
+		// it and no deferred cleanup runs — so it took down the whole process
+		// rather than failing the one request that named the bad judge model.
+		if err := v.enter(entry); err != nil {
+			log.Warn("combo", "model resolution cycle detected; refusing to expand",
+				"model", entry, "cycle", err.Error())
+			return nil
+		}
+		defer v.leave(entry)
 		if combo, err := h.Repo.GetComboByName(entry); err == nil && combo != nil && combo.Models != "" {
 			var subModels []string
 			if err := json.Unmarshal([]byte(combo.Models), &subModels); err == nil && len(subModels) > 0 {
-				first := h.resolveModelEntry(subModels[0])
+				first := h.resolveModelEntryGuarded(subModels[0], v)
 				if first != nil {
 					first.ComboModels = subModels
 					strat, sticky, judge := h.resolveComboRouting(combo.Name, combo.Strategy)
@@ -128,6 +209,15 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 // strategies are not applied here; the top-level combo's strategy governs
 // the flattened list.
 func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
+	return h.flattenComboModelsGuarded(models, newResolveVisits())
+}
+
+// flattenComboModelsGuarded is flattenComboModels with the resolution attempt's
+// visited set threaded in. A name that the outer resolution is already inside is
+// reported as a cycle instead of being expanded again, which is what bounds the
+// alias -> combo -> alias loop: the alias rewrite makes the combo's leaf name
+// the alias again, and without this the walk would re-enter it forever.
+func (h *ChatHandler) flattenComboModelsGuarded(models []string, v *resolveVisits) ([]string, error) {
 	out := make([]string, 0, len(models))
 	seen := make(map[string]bool)
 	// Gated on routing.combos for the same reason as the top-level lookup: a
@@ -139,6 +229,9 @@ func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 	walk = func(ms []string) error {
 		for _, m := range ms {
 			if !strings.Contains(m, "/") {
+				// A name already expanded on this walk is a pure combo cycle and
+				// is skipped, keeping the previous graceful-recovery behaviour for
+				// a combo that lists itself alongside a usable leaf.
 				if seen[m] {
 					log.Warn("combo", "cyclic combo reference detected, skipping", "combo", m)
 					continue
@@ -147,11 +240,18 @@ func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 					if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
 						var sub []string
 						if err := json.Unmarshal([]byte(combo.Models), &sub); err == nil {
+							// A name the outer resolution is already inside is a
+							// cycle across the alias/combo tables, which no
+							// single-table check can see. Refuse it by name.
+							if err := v.enter(m); err != nil {
+								return err
+							}
 							seen[m] = true
 							if err := walk(sub); err != nil {
 								return err
 							}
 							delete(seen, m)
+							v.leave(m)
 							continue
 						}
 					}
@@ -196,11 +296,33 @@ func stripModelContextMarker(modelStr string) string {
 // resolveModel resolves a model string through aliases, combos, and provider/model parsing.
 // Returns the first concrete ModelInfo found, or an error.
 func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
+	return h.resolveModelGuarded(modelStr, newResolveVisits())
+}
+
+// resolveModelGuarded is resolveModel with the resolution attempt's visited set
+// threaded in, so every re-entry point on the path (the alias rewrite's
+// fall-through, the combo branch's first-leaf fallback, and the nested-combo
+// walk) shares one set and a name reached twice is refused with a bounded error
+// naming the cycle instead of recursing until the stack is exhausted.
+//
+// A stack overflow here is process-fatal: recover() cannot intercept it, no
+// deferred cleanup runs, and the gateway dies with every in-flight stream on it.
+// The guard is therefore the difference between one request failing and the
+// whole process aborting.
+func (h *ChatHandler) resolveModelGuarded(modelStr string, v *resolveVisits) (*ModelInfo, error) {
 	if modelStr == "" {
 		return nil, fmt.Errorf("missing model")
 	}
 	// Strip [1m] context marker before resolution (PR #3691)
 	modelStr = stripModelContextMarker(modelStr)
+
+	// Enter this name for the duration of its resolution. The rewrite below and
+	// the combo fallback both re-enter resolution with a name derived from this
+	// one, so a name that comes back around is a cycle in the stored config.
+	if err := v.enter(modelStr); err != nil {
+		return nil, err
+	}
+	defer v.leave(modelStr)
 
 	// 0. Operator model binding: the name may be bound to another model. This
 	// runs before every other branch because a binding is an explicit operator
@@ -295,7 +417,18 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 			// reject a name this alias can serve whenever routing.combos is off.
 			// Resolution continues with the rewritten name, so the target is
 			// resolved exactly as if the client had sent it.
+			//
+			// The rewritten name is entered into the visited set for the same
+			// reason every other re-entry point is: the target is resolved by
+			// falling through to the combo branch below, so if a combo reachable
+			// from it names this alias again the resolution would otherwise loop
+			// without bound. Entering it makes the loop visible as a cycle whose
+			// chain names both the alias and the combo.
 			if aliasTarget != modelStr {
+				if err := v.enter(aliasTarget); err != nil {
+					return nil, err
+				}
+				defer v.leave(aliasTarget)
 				modelStr = aliasTarget
 			}
 		}
@@ -343,14 +476,25 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 				// Flatten nested combos into concrete leaves so rotation covers
 				// every reachable model (a nested combo entry used to collapse to
 				// its first leaf, so combo-wombo -> free-tier never rotated).
-				flattened, flatErr := h.flattenComboModels(modelStrings)
+				flattened, flatErr := h.flattenComboModelsGuarded(modelStrings, v)
 				if flatErr != nil {
 					return nil, flatErr
 				}
 				if len(flattened) > 0 {
-					firstInfo := h.resolveModelEntry(flattened[0])
+					firstInfo := h.resolveModelEntryGuarded(flattened[0], v)
 					if firstInfo == nil {
-						firstInfo, _ = h.resolveModel(flattened[0])
+						// The first leaf could not be parsed as an entry. Fall
+						// back to full resolution so a leaf that is itself an
+						// alias or bare provider still resolves. A cycle error
+						// is propagated rather than swallowed: it is the bounded,
+						// actionable report of a looping stored config, and
+						// dropping it would replace a named cycle with a generic
+						// "could not resolve model" further down.
+						fallbackInfo, fallbackErr := h.resolveModelGuarded(flattened[0], v)
+						if fallbackErr != nil && errors.Is(fallbackErr, errModelResolutionCycle) {
+							return nil, fallbackErr
+						}
+						firstInfo = fallbackInfo
 					}
 					if firstInfo != nil {
 						firstInfo.ComboModels = flattened
