@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,8 +9,19 @@ import (
 
 	json "encoding/json/v2"
 
+	"github.com/go-chi/chi/v5"
+
 	"9router/proxy/internal/db"
 )
+
+// withURLParam mirrors the chi-param convention the other dashboard tests use
+// (bounty_test.go, persona_test.go), so a route that reads a path parameter can
+// be driven directly.
+func withURLParam(r *http.Request, key, value string) *http.Request {
+	rc := chi.NewRouteContext()
+	rc.URLParams.Add(key, value)
+	return r.WithContext(context.WithValue(r.Context(), chi.RouteCtxKey, rc))
+}
 
 // The write-time refusal is the second layer over the runtime cycle guard. These
 // tests drive the real HTTP handlers, because the guard's value is that an
@@ -152,5 +164,84 @@ func TestValidationFailsClosedWithoutRepo(t *testing.T) {
 		`{"alias":"a","model":"b"}`)
 	if code == http.StatusOK {
 		t.Fatal("handler reported success with no storage")
+	}
+}
+
+// A rename must be validated against the edges the write will actually leave
+// behind. UpdateCombo rewrites the name, so removing only the NEW name would
+// leave the old name's edges in the graph and judge the proposal against a
+// config that will not exist — which can refuse a legitimate rename.
+func TestRenameComboIsValidatedAgainstPostWriteGraph(t *testing.T) {
+	h, repo := newGraphTestHandler(t)
+
+	// "old-name" -> ["cyc"], and alias cyc -> "old-name" closes a loop.
+	if err := repo.CreateCombo("c-rename", "old-name", "fallback", `["cyc"]`, "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	valBytes, _ := json.Marshal("old-name")
+	if err := repo.SetKV("modelAliases", "cyc", string(valBytes)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Renaming the combo to something unrelated breaks the loop: this must be
+	// ALLOWED, because after the write no combo named "old-name" exists.
+	code, body := postComboUpdate(t, h, "c-rename",
+		`{"name":"new-name","kind":"fallback","models":["deepseek/deepseek-chat"]}`)
+	if code != http.StatusOK {
+		t.Fatalf("rename that resolves a loop was refused: %d %s", code, body)
+	}
+
+	// The reverse: renaming INTO the loop must be refused. Repoint the alias at
+	// the new name so the post-write graph would loop.
+	valBytes, _ = json.Marshal("new-name")
+	if err := repo.SetKV("modelAliases", "cyc", string(valBytes)); err != nil {
+		t.Fatal(err)
+	}
+	code, body = postComboUpdate(t, h, "c-rename",
+		`{"name":"new-name","kind":"fallback","models":["cyc"]}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("rename that closes a loop must be refused, got %d: %s", code, body)
+	}
+	if !strings.Contains(body, "model resolution loop") {
+		t.Errorf("refusal must name the loop, got %q", body)
+	}
+}
+
+// postComboUpdate drives HandleUpdateCombo with its path parameter set.
+func postComboUpdate(t *testing.T, h *DashboardHandler, id, body string) (int, string) {
+	t.Helper()
+	req := withURLParam(httptest.NewRequest(http.MethodPut, "/api/combos/"+id, strings.NewReader(body)), "id", id)
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	h.HandleUpdateCombo(rec, req)
+	return rec.Code, rec.Body.String()
+}
+
+// The case that actually distinguishes the rename fix: the OLD name must be
+// removed from the graph, because the pre-write graph still contains its edges
+// while the post-write graph will not. Here the combo is renamed INTO a name an
+// alias already points at, so if the old name's edges linger, the walk finds a
+// loop that the write would in fact have destroyed — and a legitimate rename is
+// falsely refused.
+func TestRenameIntoAliasTargetDoesNotSeePhantomLoop(t *testing.T) {
+	h, repo := newGraphTestHandler(t)
+
+	// combo "old-name" -> ["cyc"], alias "cyc" -> "old-name": a real loop now.
+	if err := repo.CreateCombo("c-phantom", "old-name", "fallback", `["cyc"]`, "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	valBytes, _ := json.Marshal("old-name")
+	if err := repo.SetKV("modelAliases", "cyc", string(valBytes)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Rename the combo to "cyc" with a concrete leaf. After the write the loop
+	// is gone: no combo named "old-name" exists, so the alias dangles. This must
+	// be ALLOWED. Without removing the old name from the pre-write graph, the
+	// walk would follow old-name -> cyc and report a loop that no longer exists.
+	code, body := postComboUpdate(t, h, "c-phantom",
+		`{"name":"cyc","kind":"fallback","models":["deepseek/deepseek-chat"]}`)
+	if code != http.StatusOK {
+		t.Fatalf("rename that destroys a loop was falsely refused: %d %s", code, body)
 	}
 }

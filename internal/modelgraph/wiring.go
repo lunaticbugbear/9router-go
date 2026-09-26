@@ -77,8 +77,17 @@ func ValidateComboWriteAgainstRepo(repo *db.Repo, id, name string, leaves []stri
 	if err != nil {
 		return err
 	}
-	// An update replaces the row's edges; a create adds them. Removing by name
-	// first covers both, because a create has no existing edges to remove.
+	// An update REPLACES the row's edges, and UpdateCombo also rewrites the
+	// name, so the edges to remove are the ones under the combo's CURRENT name —
+	// not under the name being written. Removing by the new name would leave the
+	// old name's edges in the graph and validate the proposal against a config
+	// that will not exist after the write, which can refuse a legitimate rename
+	// or miss a loop the rename would create.
+	if id != "" {
+		if existing, err := repo.GetComboById(id); err == nil && existing != nil && existing.Name != "" && existing.Name != name {
+			g = g.WithoutCombo(existing.Name)
+		}
+	}
 	g = g.WithoutCombo(name)
 	if c := g.ValidateComboWrite(name, leaves); c != nil {
 		return fmt.Errorf("%s", Describe(c))
