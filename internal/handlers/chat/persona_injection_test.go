@@ -442,3 +442,114 @@ func TestHandleMessages_UnknownPersonaRejectedBeforeUpstream(t *testing.T) {
 		t.Fatalf("unknown persona request reached upstream %d time(s)", hits)
 	}
 }
+
+// The Claude-native branch of the persona plane: a /v1/messages request to a
+// genuinely Anthropic-headed upstream. Here the body stays in Claude Messages
+// format, so the persona must be spliced into the top-level "system" field by
+// PromptWireClaudeMessages — not into an OpenAI messages[] array.
+//
+// The existing /v1/messages test seeds a deepseek connection, so claudeNative is
+// false there and the Claude branch of fallback.go was never exercised: it
+// covered the translated path only. This pins the other half.
+//
+// The connection is made Anthropic-headed the way the code elsewhere does it: a
+// vercel edge relay pool rewrites the config to the mock server's URL while
+// carrying x-relay-target/x-relay-path for api.anthropic.com/v1/messages, which
+// is exactly the shape isAnthropicUpstream matches on.
+func TestHandleMessages_PersonaAppliedOnClaudeNativePath(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	var receivedBody []byte
+	var receivedPersonaHeader, receivedBountyHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		receivedPersonaHeader = r.Header.Get(PersonaHeader)
+		receivedBountyHeader = r.Header.Get(BountyProfileHeader)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"msg_1","type":"message","role":"assistant","content":[{"type":"text","text":"ok"}],"model":"claude-sonnet-4-6","usage":{"input_tokens":1,"output_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	// The mock must be the relay target, so the client reaches it directly.
+	if _, err := database.Exec(`CREATE TABLE IF NOT EXISTS proxyPools (
+		id TEXT PRIMARY KEY,
+		isActive INTEGER DEFAULT 1,
+		testStatus TEXT,
+		data TEXT NOT NULL,
+		createdAt TEXT NOT NULL,
+		updatedAt TEXT NOT NULL
+	);`); err != nil {
+		t.Fatalf("failed to create proxyPools table: %v", err)
+	}
+	repo := db.NewRepo(database)
+	pool, err := repo.InsertProxyPool(db.ProxyPoolData{
+		Name:     "anthropic-relay",
+		ProxyURL: upstream.URL,
+		Type:     "vercel",
+	})
+	if err != nil {
+		t.Fatalf("failed to insert proxy pool: %v", err)
+	}
+	poolID, _ := pool["id"].(string)
+	if poolID == "" {
+		t.Fatal("proxy pool insert returned no id")
+	}
+
+	seedConnDB(t, database, "claude", "conn-native", "sk-ant-test", "https://api.anthropic.com/v1/messages")
+	if _, err := database.Exec(`UPDATE providerConnections SET data = ? WHERE id = 'conn-native'`,
+		`{"apiKey":"sk-ant-test","proxyPoolId":"`+poolID+`"}`); err != nil {
+		t.Fatal(err)
+	}
+	// Only the mock is reachable; a leftover real-provider connection would be
+	// tried first and this test must not depend on network access.
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id <> 'conn-native'`); err != nil {
+		t.Fatal(err)
+	}
+
+	repo = db.NewRepo(database)
+	if err := repo.SetPersona(persona.Persona{
+		ID: "terse", SystemPrompt: "Answer in one sentence.", AppendExisting: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewChatHandler(repo)
+	body := `{"model":"claude/claude-sonnet-4-6","system":"caller rules","messages":[{"role":"user","content":"explain"}],"max_tokens":100}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	r.Header.Set(PersonaHeader, "terse")
+	w := httptest.NewRecorder()
+	h.HandleMessages(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("messages failed: %d %s", w.Code, w.Body.String())
+	}
+	if len(receivedBody) == 0 {
+		t.Fatal("no upstream request reached the mock relay")
+	}
+	if receivedPersonaHeader != "" || receivedBountyHeader != "" {
+		t.Fatalf("selector headers leaked upstream: persona=%q bounty=%q", receivedPersonaHeader, receivedBountyHeader)
+	}
+
+	var sent map[string]any
+	if err := json.Unmarshal(receivedBody, &sent); err != nil {
+		t.Fatal(err)
+	}
+	// Claude-native: the persona belongs in the top-level system field, and the
+	// body must still be Claude-shaped (no OpenAI messages[] translation).
+	system, ok := sent["system"].(string)
+	if !ok {
+		t.Fatalf("Claude-native body must carry a top-level string system field, got %#v: %s", sent["system"], receivedBody)
+	}
+	for _, want := range []string{"caller rules", "Answer in one sentence.", "operator-declared", "provider safety policies remain authoritative"} {
+		if !strings.Contains(system, want) {
+			t.Errorf("outgoing system field missing %q: %q", want, system)
+		}
+	}
+	if _, translated := sent["messages"].([]any); !translated {
+		t.Fatalf("Claude-native body lost its messages[] array: %s", receivedBody)
+	}
+	if sent["max_tokens"] == nil {
+		t.Errorf("Claude-native body lost max_tokens: %s", receivedBody)
+	}
+}

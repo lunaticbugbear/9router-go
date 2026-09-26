@@ -156,10 +156,11 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Attach the resolved local prompt context once, before routing, exactly as
-	// HandleChatCompletions does. Both this handler's routes — single model and
-	// the two combo fallbacks — end in handleAccountFallback, which is the only
-	// consumer of the plane, so resolving it here covers every path this handler
-	// can take.
+	// HandleChatCompletions does. Both this handler's routes — the single model
+	// path and the two combo fallbacks (combo.go, combo_fusion.go) — end in
+	// tryForwardWithConnection, which is where the plane is read via
+	// promptPlaneFromContext, so resolving it here covers every path this
+	// handler can take.
 	//
 	// Without this, X-9Router-Persona and X-9Router-Bounty-Profile were silently
 	// ignored on every /v1/messages request: served with no persona, no error and

@@ -873,3 +873,74 @@ func TestSessionTracingEscapesHostileSessionID(t *testing.T) {
 		t.Fatalf("hostile session id injected a field: %s", meta)
 	}
 }
+
+// An operator can name an alias and a combo the same thing. When they do, the
+// alias must win, on both flag states — the alias is the most specific rename
+// instruction the operator can give about that name, and resolution consulted
+// the alias table before the combo table.
+//
+// The alias target here has no provider prefix, which is the shape that
+// regressed: the slashless branch had no resolution of its own, so the name fell
+// through to the combo table. With routing.combos on, the same-named combo was
+// expanded instead of the alias being followed; with it off, the fail-loud
+// branch for a disabled combo rejected a request the alias could already serve.
+// The alias owns that name, so the fail-loud must not fire for it.
+func TestAliasWinsOverSameNamedCombo(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	const shared = "shared-name"
+	// Same name in both tables, pointing at different models so the winner is
+	// observable rather than inferred.
+	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('modelAliases', ?, '"deepseek-chat"')`, shared); err != nil {
+		t.Fatal(err)
+	}
+	comboModels, _ := json.Marshal([]string{"groq/llama-3.3-70b"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-shared', ?, 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, shared, string(comboModels)); err != nil {
+		t.Fatal(err)
+	}
+	h := NewChatHandler(repo)
+
+	// Flag on: the alias target wins, and the combo is not expanded for this
+	// name — no ComboModels means no combo routing plan was applied.
+	on, err := h.resolveModel(shared)
+	if err != nil {
+		t.Fatalf("flag on must resolve through the alias: %v", err)
+	}
+	if on.Provider != "deepseek" || on.Model != "deepseek-chat" {
+		t.Fatalf("flag on must follow the alias, got %+v", on)
+	}
+	if len(on.ComboModels) != 0 {
+		t.Fatalf("flag on must not expand the same-named combo, got %v", on.ComboModels)
+	}
+
+	// Flag off: the alias still owns the name, so this must resolve rather than
+	// hit the disabled-combo error.
+	if err := repo.SetFeatureFlag(flagRoutingCombos, false); err != nil {
+		t.Fatal(err)
+	}
+	off, err := h.resolveModel(shared)
+	if err != nil {
+		t.Fatalf("the disabled-combo fail-loud must not fire for an aliased name: %v", err)
+	}
+	if off.Provider != "deepseek" || off.Model != "deepseek-chat" {
+		t.Fatalf("flag off must still follow the alias, got %+v", off)
+	}
+
+	// A name that is only a combo keeps its fail-loud, so the alias precedence
+	// above narrowed the error rather than removing it.
+	onlyModels, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-only', 'combo-only-name', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(onlyModels)); err != nil {
+		t.Fatal(err)
+	}
+	info, err := h.resolveModel("combo-only-name")
+	if err == nil {
+		t.Fatalf("a combo-only name must still fail loudly, got %+v", info)
+	}
+	if !strings.Contains(err.Error(), "is a combo but combos are disabled") {
+		t.Fatalf("combo-only name must report the disabled feature, got %q", err)
+	}
+}

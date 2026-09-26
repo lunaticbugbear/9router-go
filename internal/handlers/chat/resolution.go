@@ -288,6 +288,16 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 					Model:    model,
 				}, nil
 			}
+			// Alias target without a provider prefix (e.g. "shared" ->
+			// "deepseek-chat"). The alias is still the operator's most specific
+			// rename instruction, so it must win over a same-named combo —
+			// including that branch's fail-loud below, which would otherwise
+			// reject a name this alias can serve whenever routing.combos is off.
+			// Resolution continues with the rewritten name, so the target is
+			// resolved exactly as if the client had sent it.
+			if aliasTarget != modelStr {
+				modelStr = aliasTarget
+			}
 		}
 	}
 
