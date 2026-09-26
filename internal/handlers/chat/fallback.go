@@ -515,6 +515,16 @@ func isClientCanceled(ctx context.Context, err error) bool {
 // /v1/messages): system prompts must go to the top-level "system" field —
 // a role:"system" message is rejected by the Anthropic API.
 // false from compress/inject means nothing changed (or unparseable) — keep original, not a failure.
+//
+// RTK is gated on the tokensavers.rtk feature flag in addition to the
+// TokenSaver config: the config is the process-level CLI/env switch and the flag
+// is the operator's stored choice, and both must be on for compression to run.
+// With the flag off, the body reaches upstream exactly as the caller sent it.
+//
+// The injection guard, caveman, and ponytail are deliberately not gated here:
+// they are still-planned flags whose toggles have no wired behavior yet, so
+// gating them would invent a contract the registry does not claim. Only RTK is
+// a stable flag describing live behavior.
 func (h *ChatHandler) applyTokenSavers(body []byte, claudeNative bool) []byte {
 	// Prompt-injection guard: tag (never block) flagged user content. Early
 	// detection here means operators can see abuse before it reaches upstream.
@@ -525,7 +535,7 @@ func (h *ChatHandler) applyTokenSavers(body []byte, claudeNative bool) []byte {
 		}
 	}
 	out := body
-	if h.TokenSaver.RTKEnabled() {
+	if h.TokenSaver.RTKEnabled() && h.featureFlagOn(flagRTKSaver) {
 		if next, did := tokensaver.CompressMessages(out); did {
 			out = next
 		}

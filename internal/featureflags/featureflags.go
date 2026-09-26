@@ -94,8 +94,8 @@ var registry = []Flag{
 	{ID: "observation.model-audit", Title: "Model catalog audit", Description: "Show which advertised context windows are rule-based and which are fallback guesses.", Default: true, Category: CategoryObservation},
 
 	// --- Prompt plane -------------------------------------------------------
-	{ID: "prompt.personas", Title: "Persona loader", Description: "Operator-declared system-prompt additions selected by header, default, or model binding. The core of persona-bound model names.", Default: true, Category: CategoryPrompt},
-	{ID: "prompt.bindings", Title: "Persona-bound model names", Description: "Create model names that carry a persona automatically, like a provider's -mod variants but under your control.", Default: true, Category: CategoryPrompt},
+	{ID: "prompt.personas", Title: "Persona loader", Description: "Operator-declared system-prompt additions selected by header, default, or model binding. The core of persona-bound model names. Turning this off makes the whole plane inert: no selector applies a persona.", Default: true, Category: CategoryPrompt},
+	{ID: "prompt.bindings", Title: "Persona-bound model names", Description: "Create model names that carry a persona automatically, like a provider's -mod variants but under your control. Turning this off stops the rewrite a binding performs, so a bound name falls back to alias and catalog resolution.", Default: true, Category: CategoryPrompt},
 	{ID: "prompt.bounty", Title: "Bounty authorization context", Description: "Attach your declared bug-bounty program scope to requests so providers can distinguish authorized testing from unscoped probing.", Default: true, Category: CategoryPrompt},
 	{ID: "prompt.guardrails", Title: "Declarative guardrails", Description: "Define input and output checks with deny or retry behavior, instead of relying only on the injection guard flag.", Stage: Planned, Category: CategoryPrompt},
 	{ID: "prompt.versioning", Title: "Persona versioning", Description: "Keep a history of every persona edit and roll back a bad change from the dashboard or CLI.", Stage: Planned, Category: CategoryPrompt},

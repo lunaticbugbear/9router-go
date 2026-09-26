@@ -43,22 +43,7 @@ func TestApplyTokenSavers_RTKOnly(t *testing.T) {
 	defer cleanup()
 	h.TokenSaver.SetRTK(true)
 
-	// RTK compresses tool messages with large content. Build via json.Marshal
-	// so newlines are properly escaped (raw newlines are invalid JSON).
-	var sb strings.Builder
-	for i := 0; i < 300; i++ {
-		sb.WriteString("unique log line number ")
-		sb.WriteString(strconv.Itoa(i))
-		sb.WriteString("\n")
-	}
-	body, err := json.Marshal(map[string]any{
-		"messages": []any{
-			map[string]any{"role": "tool", "content": sb.String()},
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal body: %v", err)
-	}
+	body := rtkCompressibleBody(t)
 	got := h.applyTokenSavers(body, false)
 	if string(got) == string(body) {
 		t.Errorf("expected RTK to modify body")
@@ -87,6 +72,103 @@ func TestApplyTokenSavers_PonytailInjects(t *testing.T) {
 	got := h.applyTokenSavers(body, false)
 	if !strings.Contains(string(got), tokensaver.PonytailPrompt[:20]) {
 		t.Errorf("expected ponytail prompt injected, got %s", got)
+	}
+}
+
+// rtkCompressibleBody builds a body RTK is guaranteed to rewrite: a tool message
+// with a large multi-line payload. Built via json.Marshal so newlines are
+// escaped (raw newlines are invalid JSON).
+func rtkCompressibleBody(t *testing.T) []byte {
+	t.Helper()
+	var sb strings.Builder
+	for i := 0; i < 300; i++ {
+		sb.WriteString("unique log line number ")
+		sb.WriteString(strconv.Itoa(i))
+		sb.WriteString("\n")
+	}
+	body, err := json.Marshal(map[string]any{
+		"messages": []any{
+			map[string]any{"role": "tool", "content": sb.String()},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	return body
+}
+
+// With the tokensavers.rtk flag off the RTK portion must not run even though the
+// process-level TokenSaver config has it on: the body reaches upstream byte for
+// byte as the caller sent it.
+func TestApplyTokenSavers_RTKFlagOffLeavesBodyUnchanged(t *testing.T) {
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.SetRTK(true)
+
+	body := rtkCompressibleBody(t)
+
+	// The config alone does compress, so the assertion below is testing the flag.
+	if got := h.applyTokenSavers(body, false); string(got) == string(body) {
+		t.Fatal("expected RTK to modify the body while the flag is on")
+	}
+
+	if err := h.Repo.SetFeatureFlag(flagRTKSaver, false); err != nil {
+		t.Fatal(err)
+	}
+	got := h.applyTokenSavers(body, false)
+	if string(got) != string(body) {
+		t.Errorf("RTK flag off must forward the body unchanged, got %s", got)
+	}
+
+	// Back on: compression resumes, so the flag is the only variable.
+	if err := h.Repo.SetFeatureFlag(flagRTKSaver, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.applyTokenSavers(body, false); string(got) == string(body) {
+		t.Error("expected RTK to modify the body once the flag is back on")
+	}
+}
+
+// The RTK gate must not take caveman or ponytail down with it: those are
+// separate, still-planned flags whose toggles are not wired, so they keep
+// behaving exactly as they did before the flag existed.
+func TestApplyTokenSavers_RTKFlagOffLeavesOtherSaversRunning(t *testing.T) {
+	h, cleanup := setupHandlerForForward(t)
+	defer cleanup()
+	h.TokenSaver.SetRTK(true)
+	h.TokenSaver.SetCaveman(true)
+	h.TokenSaver.SetPonytail(true)
+
+	if err := h.Repo.SetFeatureFlag(flagRTKSaver, false); err != nil {
+		t.Fatal(err)
+	}
+
+	body := rtkCompressibleBody(t)
+	got := h.applyTokenSavers(body, false)
+	if string(got) == string(body) {
+		t.Fatal("caveman and ponytail must still run while only RTK is gated off")
+	}
+	if !strings.Contains(string(got), tokensaver.PonytailPrompt[:20]) {
+		t.Errorf("ponytail must be unaffected by the RTK flag, got %s", got)
+	}
+
+	// RTK itself stayed off: the interior of the large tool payload survived
+	// uncompressed. The middle is the honest probe — RTK keeps a head and a tail
+	// of what it compresses, so the first and last lines survive either way.
+	var sent map[string]any
+	if err := json.Unmarshal(got, &sent); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	messages := sent["messages"].([]any)
+	for _, m := range messages {
+		msg, ok := m.(map[string]any)
+		if !ok || msg["role"] != "tool" {
+			continue
+		}
+		content, _ := msg["content"].(string)
+		if !strings.Contains(content, "unique log line number 150") {
+			t.Errorf("RTK compressed the tool payload while its flag was off: %s", content)
+		}
 	}
 }
 

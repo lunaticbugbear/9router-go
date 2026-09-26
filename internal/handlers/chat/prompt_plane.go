@@ -95,12 +95,29 @@ func (h *ChatHandler) BountyProfileForRequest(r *http.Request) (*bounty.Profile,
 // default, so a stored persona never affects a request until the operator turns
 // the plane on.
 //
-// An explicit header is always resolved even when the plane is disabled: a
-// client that names a persona must receive it or a clear error, never a silent
-// no-op. A header naming an unknown or deleted persona is an error, not a
-// fallback to the default, so a stale client is told rather than served
-// different instructions than it asked for.
+// The prompt.personas feature flag is the outermost switch and is checked before
+// anything else, including an explicit header: when it is off the whole plane is
+// inert, and no header, default, or binding can select a persona.
+//
+// An explicitly-named persona while the flag is off resolves to no persona and
+// is deliberately NOT an error. This is the one place the package's fail-closed
+// rule is inverted, and on purpose: a header naming an unknown persona is a
+// client mistake worth reporting, but a header naming a valid persona while the
+// operator has switched the feature off is not a mistake at all — the feature is
+// intentionally off, exactly as the operator configured it. Erroring would make
+// every client that sends the header fail, turning an operator's deliberate
+// choice into an outage and forcing them to reconfigure clients to disable a
+// server-side feature. Resolving to nothing is the honest off-state: the request
+// is served, just without the local prompt context.
+//
+// While the flag is on, resolution keeps the fail-closed rule: a header naming
+// an unknown or deleted persona is an error, not a fallback to the default, so a
+// stale client is told rather than served different instructions than it asked
+// for.
 func (h *ChatHandler) PersonaForRequest(r *http.Request) (*persona.Persona, error) {
+	if !h.featureFlagOn(flagPersonaPlane) {
+		return nil, nil
+	}
 	id := strings.TrimSpace(r.Header.Get(PersonaHeader))
 	if id != "" {
 		return h.resolvePersonaByID(id)
@@ -173,11 +190,28 @@ func (h *ChatHandler) PromptPlaneForRequest(r *http.Request, model string) (Prom
 // would: the operator asked for that prompt context by binding it, so silently
 // serving the model without it would misrepresent what the request ran with.
 //
+// This resolution needs two flags to be on, because a binding's persona is part
+// of the binding:
+//
+//   - prompt.bindings, since the persona comes from reading a binding at all;
+//   - prompt.personas, since attaching it is the persona plane doing its job. If
+//     only prompt.bindings were required, a binding would keep splicing a persona
+//     into the outbound body while the operator had switched the persona plane
+//     off — the plane would not actually be inert.
+//
+// With either flag off this returns no persona and no error: the model name then
+// resolves as if the binding carried no prompt context.
+//
 // The model name is passed in rather than read from the request body on purpose.
 // Handlers read and consume the body before resolving the plane, so peeking at
 // r.Body at this point reads an empty stream — which is exactly how a bound
 // model once resolved to its target while its persona was silently dropped.
 func (h *ChatHandler) personaFromModelBinding(model string) (*persona.Persona, error) {
+	// One settings read serves both flags, since this decision needs them together.
+	flags := h.featureFlags()
+	if !flags[flagModelBindings] || !flags[flagPersonaPlane] {
+		return nil, nil
+	}
 	model = strings.TrimSpace(model)
 	if model == "" || h.Repo == nil {
 		return nil, nil

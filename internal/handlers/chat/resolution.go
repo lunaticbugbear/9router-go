@@ -193,7 +193,17 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 	// instruction about what the name means, and it must win over the catalog —
 	// otherwise binding a name that also exists as a model would silently do
 	// nothing. The binding's persona is resolved separately, at request level.
-	if h.Repo != nil {
+	//
+	// Gated on prompt.bindings: with the flag off, bindings are skipped entirely
+	// and the name falls through to alias/combo/catalog resolution below. What it
+	// resolves to then depends on what else can serve the name: a bound name that
+	// exists nowhere else becomes an unknown model, which is the honest off-state
+	// — the same outcome the modelalias package documents for a disabled binding —
+	// rather than a silent fallback to the target, which would leave the feature
+	// running while the operator believed it was off. A name that the catalog or a
+	// configured provider can still serve keeps resolving through those paths,
+	// exactly as it would if the binding had never existed.
+	if h.Repo != nil && h.featureFlagOn(flagModelBindings) {
 		if binding, err := h.Repo.GetModelBinding(modelStr); err == nil && binding != nil {
 			if target, ok := binding.ResolveTarget(); ok {
 				log.Info("binding", "model name rewritten", "from", modelStr, "to", target, "persona", binding.Persona)
