@@ -440,6 +440,83 @@ func TestFlattenComboModels_GracefulCycleRecovery(t *testing.T) {
 	}
 }
 
+// TestResolveModelEntry_SelfReferentialJudgeIsBounded covers F3b: the fusion
+// judge path. combo.go resolves settings.comboStrategies[name].judgeModel with
+// resolveModelEntry directly, and that value is never validated — an operator can
+// store a judge model that names its own combo ("self-combo" = ["self-combo"]).
+// The top-level HTTP path cannot reach this shape (flattenComboModels catches a
+// pure combo cycle), so the runtime guard is the only thing standing between a
+// bad judge setting and unbounded recursion.
+func TestResolveModelEntry_SelfReferentialJudgeIsBounded(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	selfList, _ := json.Marshal([]string{"self-combo"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-self', 'self-combo', 'fallback', ?, '2026-07-19T00:00:00Z', '2026-07-19T00:00:00Z')`, string(selfList)); err != nil {
+		t.Fatalf("seed self combo: %v", err)
+	}
+	h := NewChatHandler(repo)
+
+	// resolveModelEntry returns no error by contract, so the guard's job here is
+	// to refuse the expansion and return nil rather than recurse. Bound the call
+	// so a regression fails fast instead of overflowing the stack.
+	done := make(chan *ModelInfo, 1)
+	go func() { done <- h.resolveModelEntry("self-combo") }()
+	select {
+	case info := <-done:
+		if info != nil {
+			t.Fatalf("self-referential judge model must not resolve, got %+v", info)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("resolveModelEntry on a self-referential combo did not return: unbounded recursion (stack overflow is process-fatal)")
+	}
+}
+
+// TestResolveModelEntry_AgreesWithResolveModelOnSlashlessAlias covers F4:
+// resolveModelEntry had no alias lookup for slashless entries, so it disagreed
+// with resolveModel about what a bare name means. resolveModel("shared") resolved
+// the alias to deepseek/deepseek-chat, while resolveModelEntry("shared") skipped
+// the alias and expanded the same-named combo instead — groq/llama-3.3-70b.
+//
+// The consequence was silent: a combo whose leaf named a slashless alias got nil
+// from resolveModelEntry and was dropped by rotation's nil -> continue, with no
+// error and no log, so the operator's leaf was never tried.
+func TestResolveModelEntry_AgreesWithResolveModelOnSlashlessAlias(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+
+	// Alias "shared" -> "deepseek/deepseek-chat", and a same-named combo whose
+	// leaf is groq/llama-3.3-70b. The alias must win on both paths.
+	if _, err := database.Exec(`INSERT INTO kv (scope, key, value) VALUES ('modelAliases', 'shared', '"deepseek/deepseek-chat"')`); err != nil {
+		t.Fatalf("seed alias: %v", err)
+	}
+	comboModels, _ := json.Marshal([]string{"groq/llama-3.3-70b"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-shared-name', 'shared', 'fallback', ?, '2026-07-19T00:00:00Z', '2026-07-19T00:00:00Z')`, string(comboModels)); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+	h := NewChatHandler(repo)
+
+	viaResolve, err := h.resolveModel("shared")
+	if err != nil {
+		t.Fatalf("resolveModel(shared): %v", err)
+	}
+	viaEntry := h.resolveModelEntry("shared")
+	if viaEntry == nil {
+		t.Fatal("resolveModelEntry(shared) returned nil: a combo leaf naming this slashless alias would be silently skipped by rotation")
+	}
+	if viaEntry.Provider != viaResolve.Provider || viaEntry.Model != viaResolve.Model {
+		t.Errorf("entry resolution disagrees with model resolution: resolveModelEntry=%s/%s resolveModel=%s/%s",
+			viaEntry.Provider, viaEntry.Model, viaResolve.Provider, viaResolve.Model)
+	}
+	if viaEntry.Provider != "deepseek" || viaEntry.Model != "deepseek-chat" {
+		t.Errorf("expected the alias to win (deepseek/deepseek-chat), got %s/%s", viaEntry.Provider, viaEntry.Model)
+	}
+}
+
 // TestResolveModel_AliasToComboToAliasIsBounded is the F3 regression test: an
 // alias whose slashless target names a stored combo whose leaf list reaches back
 // to that alias (alias "cyc" -> "cyc-combo", combo "cyc-combo" = ["cyc"]).

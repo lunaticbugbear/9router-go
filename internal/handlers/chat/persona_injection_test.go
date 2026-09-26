@@ -553,3 +553,89 @@ func TestHandleMessages_PersonaAppliedOnClaudeNativePath(t *testing.T) {
 		t.Errorf("Claude-native body lost max_tokens: %s", receivedBody)
 	}
 }
+
+// The combo path of /v1/messages. Every other persona test on this route drives
+// the single-model path (HandleMessages -> handleMessagesSingleModel), so a
+// reorder inside handleMessagesComboFallback that dropped the persona would be
+// invisible: the combo path calls tryForwardWithConnection directly instead of
+// going through handleAccountFallback, and nothing else on this route exercises
+// it with a persona selected.
+//
+// That is the F1 bug class — the persona silently absent on one route only, with
+// no error and no log — so this pins the persona reaching the mock upstream when
+// resolution picks a combo (handleMessagesComboFallback -> tryForwardWithConnection).
+func TestHandleMessages_ComboPathCarriesPersona(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	var receivedBody []byte
+	var receivedPersonaHeader, receivedBountyHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		receivedPersonaHeader = r.Header.Get(PersonaHeader)
+		receivedBountyHeader = r.Header.Get(BountyProfileHeader)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	seedConnDB(t, database, "deepseek", "conn-msg-combo-persona", "sk-test", upstream.URL)
+	// The mock is the only reachable upstream, so the persona must arrive here or
+	// not at all; a leftover real-provider connection would be tried first.
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id <> 'conn-msg-combo-persona'`); err != nil {
+		t.Fatal(err)
+	}
+
+	// A combo with two leaves, so resolution returns ComboModels and HandleMessages
+	// routes through handleMessagesComboFallback rather than the single-model path.
+	comboModels, _ := json.Marshal([]string{"deepseek/deepseek-chat", "deepseek/deepseek-reasoner"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-msg-persona', 'persona-combo', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(comboModels)); err != nil {
+		t.Fatalf("seed combo: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	if err := repo.SetPersona(persona.Persona{
+		ID: "terse", SystemPrompt: "Answer in one sentence.", AppendExisting: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewChatHandler(repo)
+	body := `{"model":"persona-combo","system":"caller rules","messages":[{"role":"user","content":"explain"}],"max_tokens":100}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	r.Header.Set(PersonaHeader, "terse")
+	w := httptest.NewRecorder()
+	h.HandleMessages(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("messages combo path failed: %d %s", w.Code, w.Body.String())
+	}
+	if len(receivedBody) == 0 {
+		t.Fatal("no upstream request reached the mock; the combo path never forwarded")
+	}
+	if receivedPersonaHeader != "" || receivedBountyHeader != "" {
+		t.Fatalf("selector headers leaked upstream: persona=%q bounty=%q", receivedPersonaHeader, receivedBountyHeader)
+	}
+
+	// The combo path must have been taken, not the single-model path: the request
+	// resolves the combo name, so the outbound model is the combo's first leaf.
+	var sent map[string]any
+	if err := json.Unmarshal(receivedBody, &sent); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := sent["model"].(string); got != "deepseek-chat" {
+		t.Fatalf("expected the combo's first leaf to be forwarded, got model=%q: %s", got, receivedBody)
+	}
+
+	messages, ok := sent["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatalf("translated body has no messages: %s", receivedBody)
+	}
+	system := messages[0].(map[string]any)["content"].(string)
+	for _, want := range []string{"caller rules", "Answer in one sentence.", "operator-declared", "provider safety policies remain authoritative"} {
+		if !strings.Contains(system, want) {
+			t.Errorf("combo-path outgoing system content missing %q: %q", want, system)
+		}
+	}
+}

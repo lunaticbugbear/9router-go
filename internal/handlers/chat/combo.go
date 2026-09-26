@@ -487,6 +487,11 @@ func (h *ChatHandler) handleComboFallback(ctx context.Context, w http.ResponseWr
 		for _, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
+				// Name the leaf that could not be resolved. A silent continue
+				// here dropped an operator's combo leaf from rotation with no
+				// error and no log, so the model was simply never tried and
+				// nothing said why.
+				log.Warn("combo", "skip unresolvable combo entry", "entry", entry, "combo", comboName)
 				continue
 			}
 
@@ -686,6 +691,11 @@ func (h *ChatHandler) handleMessagesComboFallback(ctx context.Context, w http.Re
 		for _, entry := range models {
 			modelInfo := h.resolveModelEntry(entry)
 			if modelInfo == nil {
+				// Name the leaf that could not be resolved. A silent continue
+				// here dropped an operator's combo leaf from rotation with no
+				// error and no log, so the model was simply never tried and
+				// nothing said why.
+				log.Warn("combo", "skip unresolvable combo entry", "entry", entry, "combo", comboName)
 				continue
 			}
 

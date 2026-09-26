@@ -145,7 +145,29 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 // path is refused instead of expanded again.
 func (h *ChatHandler) resolveModelEntryGuarded(entry string, v *resolveVisits) *ModelInfo {
 	if !strings.Contains(entry, "/") {
-		if h.Repo == nil || !h.featureFlagOn(flagRoutingCombos) {
+		if h.Repo == nil {
+			return nil
+		}
+		// Alias lookup first, and deliberately not gated on routing.combos: an
+		// alias is not a combo. resolveModel resolves a slashless alias before it
+		// consults the combo table (an alias is the operator's most specific
+		// rename instruction), so entry resolution must agree or the two paths
+		// disagree about what a bare name means.
+		//
+		// Without this, a combo whose leaf named a slashless alias was silently
+		// skipped by rotation: resolveModelEntry returned nil for the alias name
+		// while resolveModel resolved it, and the rotation loop's nil -> continue
+		// dropped the operator's leaf with no error and no log.
+		if aliasTarget, err := h.Repo.GetModelAlias(entry); err == nil && aliasTarget != "" && aliasTarget != entry {
+			if err := v.enter(entry); err != nil {
+				log.Warn("combo", "model resolution cycle detected; refusing to expand",
+					"model", entry, "cycle", err.Error())
+				return nil
+			}
+			defer v.leave(entry)
+			return h.resolveModelEntryGuarded(aliasTarget, v)
+		}
+		if !h.featureFlagOn(flagRoutingCombos) {
 			return nil
 		}
 		// Enter the name before expanding it. This is the recursion point that
