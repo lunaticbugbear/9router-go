@@ -29,7 +29,8 @@ type Flag struct {
 	// cost tokens on every request, or that change outbound bodies default to
 	// off; conveniences and read-only views default to on.
 	Default bool
-	// Category groups flags in the dashboard so 41 switches stay scannable.
+	// Category groups flags in the dashboard so the whole set stays scannable
+	// however many flags the registry grows to.
 	Category string
 	// Stage reports the flag's honesty level: "stable" for wired behaviors,
 	// "planned" for a registered future capability whose toggle has no effect

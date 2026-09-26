@@ -330,3 +330,115 @@ func TestPersonaIsNotStickyAcrossRequests(t *testing.T) {
 		t.Fatalf("persona stuck to a later unselected request: %s", bodies[1])
 	}
 }
+
+// The Anthropic /v1/messages path must resolve the same selectors as
+// /v1/chat/completions. Both handlers end in the same fallback, which is the
+// only reader of the resolved plane, so a request that carries a persona here
+// must reach upstream with the persona applied — and with the selector header
+// stripped, exactly as on the chat-completions path.
+//
+// This is the regression test for the plane being attached on only one of the
+// two paths: the header was accepted, no error was raised, no log line was
+// written, and the outbound body simply had no persona in it.
+func TestHandleMessages_PersonaAppliedAndSelectorStripped(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	var receivedBody []byte
+	var receivedPersonaHeader, receivedBountyHeader string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedBody, _ = io.ReadAll(r.Body)
+		receivedPersonaHeader = r.Header.Get(PersonaHeader)
+		receivedBountyHeader = r.Header.Get(BountyProfileHeader)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"id":"resp","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	seedConnDB(t, database, "deepseek", "conn-msg-persona", "sk-test", upstream.URL)
+	// Drop the pre-seeded connections so the mock is the only reachable upstream:
+	// a leftover real-provider connection would be tried first and this test must
+	// not depend on network access.
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id <> 'conn-msg-persona'`); err != nil {
+		t.Fatal(err)
+	}
+	repo := db.NewRepo(database)
+	if err := repo.SetPersona(persona.Persona{
+		ID: "terse", SystemPrompt: "Answer in one sentence.", AppendExisting: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewChatHandler(repo)
+	body := `{"model":"deepseek/deepseek-chat","system":"caller rules","messages":[{"role":"user","content":"explain"}],"max_tokens":100}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	r.Header.Set(PersonaHeader, "terse")
+	w := httptest.NewRecorder()
+	h.HandleMessages(w, r)
+	if w.Code != http.StatusOK {
+		t.Fatalf("messages failed: %d %s", w.Code, w.Body.String())
+	}
+	if receivedPersonaHeader != "" || receivedBountyHeader != "" {
+		t.Fatalf("selector headers leaked upstream: persona=%q bounty=%q", receivedPersonaHeader, receivedBountyHeader)
+	}
+	if !strings.Contains(string(receivedBody), "Answer in one sentence.") {
+		t.Fatalf("/v1/messages dropped the selected persona: %s", receivedBody)
+	}
+
+	// The persona must land in the translated OpenAI system message, beside the
+	// caller's own system text, and the user turn must be untouched.
+	var sent map[string]any
+	if err := json.Unmarshal(receivedBody, &sent); err != nil {
+		t.Fatal(err)
+	}
+	messages, ok := sent["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		t.Fatalf("translated body has no messages: %s", receivedBody)
+	}
+	system := messages[0].(map[string]any)["content"].(string)
+	for _, want := range []string{"caller rules", "Answer in one sentence.", "operator-declared", "provider safety policies remain authoritative"} {
+		if !strings.Contains(system, want) {
+			t.Errorf("outgoing system content missing %q: %q", want, system)
+		}
+	}
+	if got := messages[len(messages)-1].(map[string]any)["content"]; got != "explain" {
+		t.Errorf("user message was modified: %#v", got)
+	}
+}
+
+// Parity with the chat-completions path: an unknown persona id on /v1/messages
+// is a client mistake and must be reported before any upstream call, not
+// silently served without the instructions the client asked for.
+func TestHandleMessages_UnknownPersonaRejectedBeforeUpstream(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"x","choices":[{"message":{"content":"unexpected"}}]}`))
+	}))
+	defer upstream.Close()
+	seedConnDB(t, database, "deepseek", "conn-msg-unknown-persona", "sk-test", upstream.URL)
+	// Only the mock is reachable, so a request that got past the selector check
+	// would be observed here rather than on a real provider.
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id <> 'conn-msg-unknown-persona'`); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewChatHandler(db.NewRepo(database))
+	body := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"x"}],"max_tokens":10}`
+	r := httptest.NewRequest(http.MethodPost, "/v1/messages", strings.NewReader(body))
+	r.Header.Set(PersonaHeader, "missing-persona")
+	w := httptest.NewRecorder()
+	h.HandleMessages(w, r)
+
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "unknown persona") {
+		t.Fatalf("expected a clear 400 for a missing persona, got %d %s", w.Code, w.Body.String())
+	}
+	if hits != 0 {
+		t.Fatalf("unknown persona request reached upstream %d time(s)", hits)
+	}
+}

@@ -155,6 +155,24 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Attach the resolved local prompt context once, before routing, exactly as
+	// HandleChatCompletions does. Both this handler's routes — single model and
+	// the two combo fallbacks — end in handleAccountFallback, which is the only
+	// consumer of the plane, so resolving it here covers every path this handler
+	// can take.
+	//
+	// Without this, X-9Router-Persona and X-9Router-Bounty-Profile were silently
+	// ignored on every /v1/messages request: served with no persona, no error and
+	// no log, while the identical headers worked on /v1/chat/completions. The
+	// model name is passed from the already-parsed body rather than read from
+	// r.Body, which is consumed by this point.
+	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
+	ctx, err = h.attachPromptPlane(ctx, r, reqBody.Model)
+	if err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
 	modelInfo, err := h.resolveModel(reqBody.Model)
 	if err != nil {
 		log.Error("chat", "resolve model failed", "error", err, "model", reqBody.Model)
@@ -189,8 +207,10 @@ func (h *ChatHandler) HandleMessages(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	workingBody["stream"] = reqBody.Stream
-	ctx := handlerutil.WithSessionID(r.Context(), handlerutil.ExtractSessionID(r))
-	// Store requested model for streaming echo (PR #3693) and for [1m] marker handling
+	// Store requested model for streaming echo (PR #3693) and for [1m] marker
+	// handling. This is applied to the context built above, which already carries
+	// the session id and the resolved prompt plane — a fresh context here would
+	// drop the plane before the fallback could read it.
 	ctx = translator.WithRequestedModel(ctx, stripModelContextMarker(reqBody.Model))
 
 	requiredCaps := DetectRequiredCapabilities(body)

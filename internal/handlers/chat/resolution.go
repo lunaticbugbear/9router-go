@@ -299,14 +299,35 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 
 	// 3. Check if it's a combo name.
 	//
-	// Gated on routing.combos: with the flag off, a combo name is never expanded
-	// here and falls through to the alias/catalog branches below, resolving
-	// exactly as if the combo table were empty. A name that exists only as a
-	// combo then becomes an unknown model, which is the honest off-state rather
-	// than a silent expansion of a feature the operator switched off.
-	if h.Repo != nil && h.featureFlagOn(flagRoutingCombos) {
-		combo, err := h.Repo.GetComboByName(modelStr)
-		if err == nil && combo != nil && combo.Models != "" {
+	// Gated on routing.combos. A combo name must never be silently resolved to
+	// something else: the name is an operator-authored routing plan (rotation,
+	// fallback order, strategy, sticky limit, judge model), and the catalog
+	// fallback below would fabricate a single model out of it — dropping all of
+	// that while reporting success. So the flag has two outcomes here:
+	//
+	//   - on: the combo is expanded and its routing plan applies;
+	//   - off: a name that IS a stored combo fails loudly, because the operator
+	//     switched off the feature that gives the name its meaning. Resolving it
+	//     as a fabricated model would serve one arbitrary leaf while the operator
+	//     believed the combo was inert.
+	//
+	// A name that is not a combo is untouched by this and keeps resolving through
+	// the alias/catalog branches below exactly as before, which is the honest
+	// off-state for everything else.
+	if h.Repo != nil {
+		combo, comboErr := h.Repo.GetComboByName(modelStr)
+		if comboErr != nil {
+			// A storage failure leaves this name's meaning unknown. It is logged
+			// rather than resolved either way: failing hard would turn an
+			// unrelated storage problem into an outage of every bare-name
+			// request, and the alias/catalog branches below are the same
+			// resolution this name would have had before the combo table was
+			// consulted at all.
+			log.Warn("combo", "combo lookup failed", "model", modelStr, "error", comboErr)
+		} else if combo != nil && combo.Models != "" {
+			if !h.featureFlagOn(flagRoutingCombos) {
+				return nil, fmt.Errorf("model %q is a combo but combos are disabled (feature flag routing.combos is off)", modelStr)
+			}
 			var modelStrings []string
 			if err := json.Unmarshal([]byte(combo.Models), &modelStrings); err == nil && len(modelStrings) > 0 {
 				// Flatten nested combos into concrete leaves so rotation covers

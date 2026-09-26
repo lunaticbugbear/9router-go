@@ -709,7 +709,7 @@ func (r *Repo) SetFeatureFlag(id string, on bool) error {
 
 // ResetFeatureFlags clears every stored choice in one write, returning every
 // flag to its registry default. It exists because a settings menu that can
-// turn 41 things off also needs one obvious way back.
+// turn dozens of things off also needs one obvious way back.
 func (r *Repo) ResetFeatureFlags() error {
 	return r.UpdateSettingsRaw(map[string]any{"featureFlags": map[string]any{}})
 }

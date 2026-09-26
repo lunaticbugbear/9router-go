@@ -587,6 +587,67 @@ func TestRoutingCombosOffSkipsBothExpansionBranches(t *testing.T) {
 	}
 }
 
+// The test above passes for the wrong reason on its own: its combo name is
+// unresolvable by the catalog, so "unresolved" and "fails loud" look identical.
+// This one seeds a combo whose leaves ARE catalog-resolvable, which is the shape
+// that used to silently fabricate a model: with the flag off, the name fell past
+// the combo branch into the common-provider fallback and resolved to
+// deepseek/resolvable-combo — a single made-up model, with the combo's rotation,
+// fallback order, strategy and sticky limit all dropped, and no error reported.
+//
+// The contract is explicit instead: a stored combo with routing.combos off is an
+// error naming the flag, never a fabricated resolution.
+func TestRoutingCombosOffFailsLoudOnCatalogResolvableCombo(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	repo := db.NewRepo(database)
+	// Leaves are real provider/model pairs, so nothing but the combo table makes
+	// this name special.
+	models, _ := json.Marshal([]string{"deepseek/deepseek-chat", "groq/llama-3.3-70b"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-resolvable', 'resolvable-combo', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(models)); err != nil {
+		t.Fatal(err)
+	}
+	h := NewChatHandler(repo)
+
+	// Sanity: with the flag on the name is a combo and keeps its full routing plan.
+	on, err := h.resolveModel("resolvable-combo")
+	if err != nil || on == nil {
+		t.Fatalf("flag on must resolve the combo: info=%+v err=%v", on, err)
+	}
+	if len(on.ComboModels) != 2 {
+		t.Fatalf("flag on must expand to both leaves, got %+v", on.ComboModels)
+	}
+
+	if err := repo.SetFeatureFlag(flagRoutingCombos, false); err != nil {
+		t.Fatal(err)
+	}
+	info, err := h.resolveModel("resolvable-combo")
+	if err == nil {
+		t.Fatalf("a disabled combo must fail loudly, got fabricated %+v", info)
+	}
+	if info != nil {
+		t.Fatalf("a disabled combo must not return a ModelInfo, got %+v", info)
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "resolvable-combo") || !strings.Contains(msg, "is a combo but combos are disabled") {
+		t.Fatalf("error must name the model and the disabled feature, got %q", msg)
+	}
+	if !strings.Contains(msg, flagRoutingCombos) {
+		t.Fatalf("error must name the flag to switch back on, got %q", msg)
+	}
+
+	// The flag must not have leaked into anything else: names that are not combos
+	// keep resolving through the catalog exactly as before.
+	for _, name := range []string{"deepseek/deepseek-chat", "groq/llama-3.3-70b", "unrelated-bare-name"} {
+		got, err := h.resolveModel(name)
+		if err != nil || got == nil {
+			t.Fatalf("non-combo %q must still resolve with combos off: info=%+v err=%v", name, got, err)
+		}
+	}
+}
+
 // --- routing.sticky-sessions ------------------------------------------------
 
 // With routing.sticky-sessions off, rotation still happens (combos keep working)
@@ -675,6 +736,74 @@ func TestBountyFlagOffIgnoresHeaderWithoutError(t *testing.T) {
 	unknown.Header.Set(BountyProfileHeader, "never-stored")
 	if _, err := h.BountyProfileForRequest(unknown); err != nil {
 		t.Fatalf("flag off must not validate the header at all, got %v", err)
+	}
+}
+
+// The resolver-level test above pins the off-state of the selector, but not what
+// actually leaves the process. This drives a stored profile through the real
+// handler with the flag off and inspects the upstream body: the request must
+// succeed and must carry no scope block. Off means "resolves to nothing", not
+// "rejects the request" and not "forwards the block anyway".
+func TestBountyFlagOffForwardsNoScopeBlock(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	var bodies [][]byte
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"resp","choices":[{"message":{"content":"ok"}}],"usage":{"prompt_tokens":1,"completion_tokens":1}}`))
+	}))
+	defer upstream.Close()
+
+	seedConnDB(t, database, "deepseek", "conn-bounty-off", "sk-test", upstream.URL)
+	// Only the mock is reachable: the assertions are about the body this process
+	// sends, so the request must never leave for a real provider.
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id <> 'conn-bounty-off'`); err != nil {
+		t.Fatal(err)
+	}
+	repo := db.NewRepo(database)
+	if err := repo.SetBountyProfile(bounty.Profile{
+		ID: "h1-off", Program: "Demo program", InScope: []string{"api.demo.test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewChatHandler(repo)
+	body := `{"model":"deepseek/deepseek-chat","messages":[{"role":"user","content":"analyze"}]}`
+
+	send := func() {
+		t.Helper()
+		r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+		r.Header.Set(BountyProfileHeader, "h1-off")
+		w := httptest.NewRecorder()
+		h.HandleChatCompletions(w, r)
+		if w.Code != http.StatusOK {
+			t.Fatalf("bounty flag off must still serve the request, got %d %s", w.Code, w.Body.String())
+		}
+	}
+
+	// Flag on (the default): the stored profile's scope reaches upstream.
+	send()
+	if !strings.Contains(string(bodies[0]), "api.demo.test") {
+		t.Fatalf("flag on did not attach the scope block: %s", bodies[0])
+	}
+
+	if err := repo.SetFeatureFlag(flagBountyContext, false); err != nil {
+		t.Fatal(err)
+	}
+	send()
+	if strings.Contains(string(bodies[1]), "api.demo.test") {
+		t.Fatalf("flag off forwarded the scope block anyway: %s", bodies[1])
+	}
+	// The body must be otherwise intact: off is inert, not destructive.
+	var sent map[string]any
+	if err := json.Unmarshal(bodies[1], &sent); err != nil {
+		t.Fatal(err)
+	}
+	messages := sent["messages"].([]any)
+	if len(messages) != 1 || messages[0].(map[string]any)["content"] != "analyze" {
+		t.Fatalf("flag off altered the caller's messages: %s", bodies[1])
 	}
 }
 
