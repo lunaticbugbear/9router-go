@@ -3,6 +3,10 @@
 
 ## [Unreleased]
 
+### Combo cycle validation
+
+- Renaming a combo without supplying `models` now validates its retained stored leaves, not an empty list. A rename that closes an alias↔combo loop returns HTTP 400 without changing the combo; an acyclic rename still succeeds.
+
 ### Persona-bound model names, catalog audit, and install tools
 
 - `9router bind` creates a model name bound to a target model and/or a persona file — the mechanism behind `-mod`-style names. Fail-closed when the bound persona is missing (400 before upstream), a disabled binding resolves to nothing, and the `X-9Router-Persona` header takes precedence over a binding. Personas append below the caller's system prompt unless `--replace` is given.

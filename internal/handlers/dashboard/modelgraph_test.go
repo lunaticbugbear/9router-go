@@ -245,3 +245,31 @@ func TestRenameIntoAliasTargetDoesNotSeePhantomLoop(t *testing.T) {
 		t.Fatalf("rename that destroys a loop was falsely refused: %d %s", code, body)
 	}
 }
+
+// Omitting models during an update keeps the stored leaves. A rename can close
+// a cross-store loop even when no new leaf list is supplied, so validation must
+// inspect the effective list that UpdateCombo will actually persist.
+func TestRenameComboWithoutModelsRejectsCycle(t *testing.T) {
+	h, repo := newGraphTestHandler(t)
+	if err := repo.CreateCombo("c-retained", "old-name", "fallback", `["cyc"]`, "fallback"); err != nil {
+		t.Fatal(err)
+	}
+	aliasTarget, _ := json.Marshal("new-name")
+	if err := repo.SetKV("modelAliases", "cyc", string(aliasTarget)); err != nil {
+		t.Fatal(err)
+	}
+
+	// Post-write, new-name -> cyc -> new-name. The handler must refuse the
+	// rename even though the request omits models and retains the stored list.
+	code, body := postComboUpdate(t, h, "c-retained", `{"name":"new-name"}`)
+	if code != http.StatusBadRequest || !strings.Contains(body, "model resolution loop") {
+		t.Fatalf("rename retaining cyclic leaves must fail with 400, got %d: %s", code, body)
+	}
+	stored, err := repo.GetComboById("c-retained")
+	if err != nil || stored == nil {
+		t.Fatalf("read combo after rejected write: %v", err)
+	}
+	if stored.Name != "old-name" || stored.Models != `["cyc"]` {
+		t.Fatalf("rejected rename changed stored combo: %+v", stored)
+	}
+}
