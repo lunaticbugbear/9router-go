@@ -24,6 +24,8 @@ describe('router', () => {
     expect(pathToTab('/dashboard/console-log')).toBe('console-log')
     expect(pathToTab('/dashboard/terminal')).toBe('console-log')
     expect(pathToTab('/dashboard/profile')).toBe('settings')
+    expect(pathToTab('/dashboard/feature-flags')).toBe('feature-flags')
+    expect(pathToTab('/feature-flags')).toBe('feature-flags')
   })
 
   it('has canonical routes for all tabs in TAB_ROUTES', () => {
@@ -45,6 +47,7 @@ describe('router', () => {
     expect(TAB_ROUTES['console-log']).toBe('/dashboard/console-log')
     expect(TAB_ROUTES.settings).toBe('/dashboard/profile')
     expect(TAB_ROUTES.login).toBe('/login')
+    expect(TAB_ROUTES['feature-flags']).toBe('/dashboard/feature-flags')
   })
 
   it('parses provider ID from route pathname', () => {

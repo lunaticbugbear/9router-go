@@ -127,6 +127,7 @@
     { tab: 'cli-tools' as ActiveTab, label: 'CLI Tools', icon: 'terminal' },
     { tab: 'bounty' as ActiveTab, label: 'Bug Bounty Assist', icon: 'bug_report' },
     { tab: 'personas' as ActiveTab, label: 'Persona Loader', icon: 'psychology' },
+    { tab: 'feature-flags' as ActiveTab, label: 'Feature Flags', icon: 'toggle_on' },
   ] as const
 
   const mediaNavLinks = [

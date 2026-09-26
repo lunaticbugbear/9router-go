@@ -33,6 +33,7 @@
   import TopBar from './components/TopBar.svelte'
   import BountyAssistView from './components/BountyAssistView.svelte'
   import PersonaView from './components/PersonaView.svelte'
+  import FeatureFlagsView from './components/FeatureFlagsView.svelte'
   import { parseMediaProvider, parseProviderId, pathToTab, providerPath, mediaProviderPath, TAB_ROUTES, type ActiveTab, type MediaProviderRoute } from './lib/router'
   import { PROVIDER_CATALOG } from './lib/providers'
   import { getIconPath } from './components/connections/types'
@@ -233,6 +234,7 @@
     terminal: { title: 'Console Log', description: 'Live server console output' },
     settings: { title: 'Settings', description: 'Manage your preferences and configuration' },
     keys: { title: 'CLI & Remote Access', description: 'API keys for your CLI tools' },
+    'feature-flags': { title: 'Feature Flags', description: 'Turn optional gateway capabilities on or off' },
   }
 
   function handleOpenNewCombo() {
@@ -347,6 +349,8 @@
               <BountyAssistView />
             {:else if activeTab === 'personas'}
               <PersonaView />
+            {:else if activeTab === 'feature-flags'}
+              <FeatureFlagsView />
             {:else if activeTab === 'media-embedding'}
               {#if selectedMedia && selectedMediaCatalogItem}
                 <MediaProviderDetail

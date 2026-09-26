@@ -79,6 +79,29 @@ export interface BountyHelper {
   description: string
 }
 
+/** One optional capability in the feature-flag settings menu. The effective
+ * state is resolved server-side, so `on` is what the gateway will actually do
+ * and `chosen` reports whether the operator ever overrode the default. */
+export interface FeatureFlag {
+  id: string
+  title: string
+  description: string
+  category: string
+  /** "stable" means the toggle controls live behavior; "planned" means the
+   * capability is registered but not built, so the toggle changes nothing. */
+  stage: string
+  on: boolean
+  chosen: boolean
+}
+
+export interface FeatureFlagsResponse {
+  flags: FeatureFlag[]
+  /** Category display order, as decided by the server registry. */
+  categories: string[]
+  stableCount: number
+  plannedCount: number
+}
+
 export interface Settings {
   requireApiKey?: boolean
   tunnelDashboardAccess?: boolean
@@ -620,6 +643,20 @@ export const api = {
       defaultPersona: string
       stored: boolean
     }>(`/api/personas/preview?name=${encodeURIComponent(name)}`),
+
+  // Feature flags: one switch per optional capability. The registry is
+  // append-only and IDs are stable keys, so the menu renders what GET returns
+  // rather than hardcoding a list that could drift from the gateway.
+  getFeatureFlags: () => request<FeatureFlagsResponse>('/api/settings/features'),
+  setFeatureFlag: (flag: string, on: boolean) =>
+    request<{ flag: string; on: boolean; stage: string }>('/api/settings/features', {
+      method: 'PUT',
+      body: JSON.stringify({ flag, on }),
+    }),
+  // Clears every stored choice. The response already carries the effective
+  // defaults, but the menu re-fetches anyway so `chosen` is refreshed too.
+  resetFeatureFlags: () =>
+    request<{ flags: Record<string, boolean> }>('/api/settings/features', { method: 'DELETE' }),
 
   // Settings
   getSettings: () => request<Settings>('/api/settings'),

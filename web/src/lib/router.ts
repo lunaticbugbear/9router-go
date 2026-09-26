@@ -22,6 +22,7 @@ export type ActiveTab =
   | 'keys'
   | 'bounty'
   | 'personas'
+  | 'feature-flags'
 
 export const TAB_ROUTES: Record<ActiveTab, string> = {
   login: '/login',
@@ -47,6 +48,7 @@ export const TAB_ROUTES: Record<ActiveTab, string> = {
   keys: '/dashboard/cli-tools',
   bounty: '/dashboard/bounty',
   personas: '/dashboard/personas',
+  'feature-flags': '/dashboard/feature-flags',
 }
 
 const ROUTE_TO_TAB: Record<string, ActiveTab> = {
@@ -126,6 +128,10 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   '/dashboard/personas': 'personas',
   '/personas': 'personas',
 
+  // feature flags
+  '/dashboard/feature-flags': 'feature-flags',
+  '/feature-flags': 'feature-flags',
+
   // proxy pools
   '/dashboard/proxy-pools': 'proxy-pools',
   '/proxy-pools': 'proxy-pools',
@@ -181,6 +187,7 @@ export function pathToTab(pathname: string): ActiveTab {
   if (normalized.includes('providers') || normalized.includes('connections')) return 'connections'
   if (normalized.includes('bounty')) return 'bounty'
   if (normalized.includes('personas')) return 'personas'
+  if (normalized.includes('feature-flags')) return 'feature-flags'
   if (normalized.includes('profile') || normalized.includes('settings')) return 'settings'
   return 'endpoint'
 }
