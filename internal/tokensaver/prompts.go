@@ -527,3 +527,62 @@ func toMessageArray(v any) []any {
 	}
 	return arr
 }
+
+// InjectPersonaInlineStrict delivers a persona as the leading content of the
+// FIRST user message instead of as a system message.
+//
+// This exists because some OpenAI-compatible upstreams do not process a system
+// message at all: measured against one provider, a 71 KB system prompt was
+// acknowledged with prompt_tokens=42 and the model never saw it, while the same
+// text in a user message was counted in full (16899 prompt tokens). Delivering a
+// long persona through the system field is therefore silently useless there,
+// whereas the user path is the one those providers actually read.
+//
+// The persona is still operator instruction text, so it is marked as such and
+// the request is still fail-closed: a body with no user message returns
+// ErrUninjectable rather than forwarding an unpersonified request.
+//
+// Order matters: the persona goes ABOVE the caller's own words in the same
+// message, so the operator's doctrine frames the request and the caller's task
+// reads as the thing being instructed.
+func InjectPersonaInlineStrict(body []byte, prompt string) ([]byte, bool, error) {
+	var req map[string]any
+	if err := json.Unmarshal(body, &req); err != nil || req == nil {
+		return body, false, ErrUninjectable
+	}
+	arr := toMessageArray(req["messages"])
+	if arr == nil {
+		return body, false, ErrUninjectable
+	}
+	for i, m := range arr {
+		msg, isMap := m.(map[string]any)
+		if !isMap {
+			continue
+		}
+		if role, _ := msg["role"].(string); role != "user" {
+			continue
+		}
+		content, isStr := msg["content"].(string)
+		if !isStr {
+			return body, false, ErrUninjectable
+		}
+		if strings.Contains(content, prompt) {
+			return body, false, nil
+		}
+		clone := make([]any, len(arr))
+		copy(clone, arr)
+		msgCopy := make(map[string]any, len(msg))
+		for k, v := range msg {
+			msgCopy[k] = v
+		}
+		msgCopy["content"] = prompt + "\n\n---\n\n" + content
+		clone[i] = msgCopy
+		req["messages"] = clone
+		out, err := json.Marshal(req)
+		if err != nil {
+			return body, false, ErrUninjectable
+		}
+		return out, true, nil
+	}
+	return body, false, ErrUninjectable
+}

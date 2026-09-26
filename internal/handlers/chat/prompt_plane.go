@@ -279,6 +279,9 @@ func InjectPersonaToBody(body []byte, addition persona.PersonaAddition, format P
 		}
 		return tokensaver.InjectSystemPromptResponsesStrict(body, addition.Text)
 	default:
+		if addition.Inline {
+			return tokensaver.InjectPersonaInlineStrict(body, addition.Text)
+		}
 		if addition.Replace {
 			return tokensaver.ReplaceChatSystem(body, addition.Text)
 		}

@@ -63,6 +63,13 @@ type Persona struct {
 	Name           string `json:"name,omitempty"`
 	SystemPrompt   string `json:"systemPrompt"`
 	AppendExisting bool   `json:"appendExisting"`
+	// Inline delivers the persona as the leading content of the first user
+	// message instead of as a system message. It exists for upstreams that do
+	// not process a system message at all: measured against one such provider, a
+	// 71 KB system prompt was reported as 42 prompt tokens and never reached the
+	// model, while the same text in a user message was counted in full. A long
+	// persona delivered through system is silently useless there.
+	Inline bool `json:"inline,omitempty"`
 }
 
 // Validate rejects an incomplete or oversized persona before storing or using
@@ -101,6 +108,9 @@ type PersonaAddition struct {
 	// Replace reports whether the caller's own system content must be dropped:
 	// it is true only for the explicit AppendExisting=false choice.
 	Replace bool
+	// Inline reports whether the block travels as leading user content rather
+	// than in a system field, for upstreams that ignore system messages.
+	Inline bool
 }
 
 // BuildSystemAddition renders the persona block.
@@ -121,7 +131,11 @@ func (p Persona) BuildSystemAddition() string {
 // Addition bundles the rendered block with the replacement decision, so an
 // injector cannot apply one without the other.
 func (p Persona) Addition() PersonaAddition {
-	return PersonaAddition{Text: p.BuildSystemAddition(), Replace: !p.AppendExisting}
+	return PersonaAddition{
+		Text:    p.BuildSystemAddition(),
+		Replace: !p.AppendExisting,
+		Inline:  p.Inline,
+	}
 }
 
 // AdditionLength reports the bounded length of the rendered addition.

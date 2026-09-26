@@ -61,6 +61,7 @@ the -mod variants this mirrors: the text is prepended on every call.`,
 			&cli.StringFlag{Name: "persona-file", Usage: "path to a file whose contents become the persona text"},
 			&cli.StringFlag{Name: "persona-text", Usage: "persona text inline (use --persona-file for long personas)"},
 			&cli.BoolFlag{Name: "replace", Usage: "replace the caller's system prompt instead of appending below it"},
+			&cli.BoolFlag{Name: "inline", Usage: "deliver the persona as leading user content (for upstreams that ignore system messages)"},
 			&cli.BoolFlag{Name: "disable", Usage: "disable an existing binding instead of creating one"},
 			&cli.BoolFlag{Name: "list", Usage: "list bindings and exit"},
 			&cli.BoolFlag{Name: "delete", Usage: "delete the binding named by the argument"},
@@ -133,12 +134,15 @@ func runBind(cCtx *cli.Context) error {
 			ID:             personaID,
 			SystemPrompt:   text,
 			AppendExisting: !cCtx.Bool("replace"),
+			Inline:         cCtx.Bool("inline"),
 		}
 		if err := repo.SetPersona(p); err != nil {
 			return fmt.Errorf("store persona %q: %w", personaID, err)
 		}
 		mode := "appended below any caller system prompt"
-		if cCtx.Bool("replace") {
+		if cCtx.Bool("inline") {
+			mode = "delivered as leading USER content (system-ignoring upstreams)"
+		} else if cCtx.Bool("replace") {
 			mode = "REPLACING the caller system prompt"
 		}
 		fmt.Printf("Stored persona %q (%d bytes, %s).\n", personaID, len(text), mode)
