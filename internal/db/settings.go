@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"9router/proxy/internal/bounty"
+	"9router/proxy/internal/featureflags"
 	"9router/proxy/internal/handlerutil"
 	"9router/proxy/internal/modelalias"
 	"9router/proxy/internal/persona"
@@ -59,6 +60,11 @@ type SettingsData struct {
 	// scope, only the operator's own text is stored — never request bodies or
 	// model responses.
 	Personas map[string]persona.Persona `json:"personas,omitempty"`
+	// FeatureFlags stores the operator's on/off choices for optional
+	// capabilities, keyed by the featureflags registry ID. Unknown keys are
+	// kept as written but resolve to the registry default, so a downgrade does
+	// not lose settings and an upgrade does not force a re-decision.
+	FeatureFlags map[string]bool `json:"featureFlags,omitempty"`
 	// ModelBindings pair a model name with a target model and/or a persona —
 	// the mechanism behind names like "glm-5.3-mod". Distinct from the kv alias
 	// table, which can only rename.
@@ -300,6 +306,19 @@ func (r *Repo) GetSettings() (*SettingsData, error) {
 			bindings[id] = b
 		}
 		s.ModelBindings = bindings
+	}
+
+	// Feature flags decode defensively: an unknown key survives storage so the
+	// operator's choice is not lost when the registry shrinks, but nothing
+	// crashes on a missing or malformed map.
+	if flagsRaw, ok := raw["featureFlags"].(map[string]any); ok {
+		flags := make(map[string]bool, len(flagsRaw))
+		for id, value := range flagsRaw {
+			if b, ok := value.(bool); ok {
+				flags[id] = b
+			}
+		}
+		s.FeatureFlags = flags
 	}
 
 	// Capacity adapter pools (vision, audioInput, etc.)
@@ -643,4 +662,54 @@ func (r *Repo) PersonaIDs() ([]string, error) {
 	}
 	sort.Strings(ids)
 	return ids, nil
+}
+
+// GetFeatureFlags resolves the effective on/off state of every registered
+// feature flag. Stored choices win; flags the operator has never touched
+// resolve to the registry default, so a fresh feature lands in its designed
+// state without a migration.
+func (r *Repo) GetFeatureFlags() (map[string]bool, error) {
+	settings, err := r.GetSettings()
+	if err != nil {
+		return nil, err
+	}
+	stored := settings.FeatureFlags
+	if stored == nil {
+		stored = map[string]bool{}
+	}
+	effective := make(map[string]bool, len(featureflags.All()))
+	for _, f := range featureflags.All() {
+		if choice, ok := stored[f.ID]; ok {
+			effective[f.ID] = choice
+		} else {
+			effective[f.ID] = f.Default
+		}
+	}
+	return effective, nil
+}
+
+// SetFeatureFlag stores one choice without clobbering unrelated settings or
+// other flags. Setting an unknown id is an error: a typo would otherwise
+// silently create a switch that controls nothing.
+func (r *Repo) SetFeatureFlag(id string, on bool) error {
+	if _, ok := featureflags.Get(id); !ok {
+		return fmt.Errorf("unknown feature flag %q", id)
+	}
+	raw, err := r.GetSettingsRaw()
+	if err != nil || raw == nil {
+		raw = make(map[string]any)
+	}
+	flags, _ := raw["featureFlags"].(map[string]any)
+	if flags == nil {
+		flags = make(map[string]any)
+	}
+	flags[id] = on
+	return r.UpdateSettingsRaw(map[string]any{"featureFlags": flags})
+}
+
+// ResetFeatureFlags clears every stored choice in one write, returning every
+// flag to its registry default. It exists because a settings menu that can
+// turn 41 things off also needs one obvious way back.
+func (r *Repo) ResetFeatureFlags() error {
+	return r.UpdateSettingsRaw(map[string]any{"featureFlags": map[string]any{}})
 }

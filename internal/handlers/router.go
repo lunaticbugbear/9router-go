@@ -245,6 +245,18 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo) {
 	r.Put("/settings", dashH.HandleUpdateSettings)
 	r.Patch("/settings", dashH.HandleUpdateSettings)
 
+	// Feature flags: the registry of optional capabilities plus the operator's
+	// on/off choices. Dashboard-only, and also inherits RequireDashboardAuth
+	// from the caller.
+	//
+	// GET returns every registered flag with its effective state and stage, PUT
+	// stores one choice at a time, DELETE clears every stored choice back to the
+	// registry defaults. Choices live in the settings row, so a flag the
+	// operator never touched keeps its designed default rather than a guess.
+	r.Get("/api/settings/features", dashH.HandleGetFeatureFlags)
+	r.Put("/api/settings/features", dashH.HandleSetFeatureFlag)
+	r.Delete("/api/settings/features", dashH.HandleResetFeatureFlags)
+
 	// Settings backup/restore + outbound proxy diagnostics (profile page)
 	r.Get("/api/settings/database", dashH.HandleExportDatabase)
 	r.Post("/api/settings/database", dashH.HandleImportDatabase)
