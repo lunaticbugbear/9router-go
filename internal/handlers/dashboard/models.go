@@ -8,6 +8,7 @@ import (
 	"net/url"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/modelgraph"
 )
 
 // HandleGetCustomModels handles GET /api/models/custom.
@@ -239,6 +240,17 @@ func (h *DashboardHandler) HandleSetModelAlias(w http.ResponseWriter, r *http.Re
 	}
 	if req.Model == "" || req.Alias == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "model and alias required")
+		return
+	}
+
+	// Refuse an alias that would close a resolution loop. The graph spans the
+	// alias store and the combo table, so this reads both: a check over either
+	// alone cannot see an alias -> combo -> alias loop, which is the shape that
+	// used to recurse until the process aborted. Validated against the state the
+	// write would leave behind, so an edit that RESOLVES an existing loop is
+	// still allowed.
+	if err := modelgraph.ValidateAliasWriteAgainstRepo(h.Repo, req.Alias, req.Model); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 

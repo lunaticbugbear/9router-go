@@ -8,6 +8,7 @@ import (
 	"github.com/google/uuid"
 
 	"9router/proxy/internal/handlerutil"
+	"9router/proxy/internal/modelgraph"
 	"9router/proxy/internal/models"
 )
 
@@ -69,6 +70,14 @@ func (h *DashboardHandler) HandleCreateCombo(w http.ResponseWriter, r *http.Requ
 				modelsJSON = string(b)
 			}
 		}
+	}
+
+	// Refuse a combo that would close a resolution loop. The graph spans the
+	// combo table and the alias store, so this reads both: a check over either
+	// alone cannot see a combo -> alias -> combo loop.
+	if err := modelgraph.ValidateComboWriteAgainstRepo(h.Repo, req.ID, req.Name, modelgraph.ComboLeavesFromRequest(req.Models)); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	if err := h.Repo.CreateCombo(req.ID, req.Name, req.Kind, modelsJSON, req.Strategy); err != nil {
@@ -139,6 +148,14 @@ func (h *DashboardHandler) HandleUpdateCombo(w http.ResponseWriter, r *http.Requ
 	strategy := req.Strategy
 	if strategy == "" {
 		strategy = existing.Strategy
+	}
+
+	// Same refusal on update: the proposal replaces this combo's edges, so an
+	// edit that closes a loop is rejected and one that opens an existing loop is
+	// allowed through.
+	if err := modelgraph.ValidateComboWriteAgainstRepo(h.Repo, id, name, modelgraph.ComboLeavesFromRequest(req.Models)); err != nil {
+		handlerutil.WriteJSONError(w, http.StatusBadRequest, err.Error())
+		return
 	}
 
 	if err := h.Repo.UpdateCombo(id, name, kind, modelsJSON, strategy); err != nil {
