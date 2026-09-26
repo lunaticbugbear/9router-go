@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/urfave/cli/v2"
 
@@ -58,6 +63,10 @@ the -mod variants this mirrors: the text is prepended on every call.`,
 			&cli.StringFlag{Name: "persona-id", Usage: "persona id to attach (defaults to the bound name; omit to keep the existing one)"},
 			&cli.BoolFlag{Name: "clear-persona", Usage: "remove the persona from an existing binding"},
 			&cli.BoolFlag{Name: "clear-target", Usage: "remove the model rewrite from an existing binding"},
+			&cli.BoolFlag{Name: "check", Usage: "probe the bound model and report whether the persona was actually adopted"},
+			&cli.StringFlag{Name: "gateway", Value: "http://127.0.0.1:20130", Usage: "gateway HTTP base address"},
+			&cli.StringFlag{Name: "key", Value: "", Usage: "gateway API key for the probe"},
+			&cli.DurationFlag{Name: "timeout", Value: 90 * time.Second, Usage: "per-probe timeout"},
 			&cli.StringFlag{Name: "persona-file", Usage: "path to a file whose contents become the persona text"},
 			&cli.StringFlag{Name: "persona-text", Usage: "persona text inline (use --persona-file for long personas)"},
 			&cli.BoolFlag{Name: "replace", Usage: "replace the caller's system prompt instead of appending below it"},
@@ -80,6 +89,10 @@ func runBind(cCtx *cli.Context) error {
 
 	if cCtx.Bool("list") {
 		return listBindings(repo)
+	}
+
+	if cCtx.Bool("check") {
+		return checkAdoption(cCtx, repo)
 	}
 
 	// A flag written after the model name is not parsed as a flag, so it arrives
@@ -251,4 +264,137 @@ func listBindings(repo *db.Repo) error {
 		fmt.Printf("%-24s %-6s %-30s %s\n", name, state, target, personaID)
 	}
 	return nil
+}
+
+// checkAdoption probes a bound model with an instruction whose effect is
+// observable in the reply, and reports whether the persona was adopted rather
+// than merely transmitted.
+//
+// The probe pairs a behavioral marker with the persona's own doctrine: a
+// persona that reaches the model changes how it answers; one that is dropped by
+// a system-ignoring upstream leaves the reply untouched. Both are reported, so
+// the operator gets evidence either way instead of a request that only "worked
+// once".
+//
+// The gateway HTTP address comes from --gateway (default 127.0.0.1:20130) and
+// the key from --key; the check needs a key that can call the inference planes,
+// which is why those are flags rather than database reads.
+func checkAdoption(cCtx *cli.Context, repo *db.Repo) error {
+	name := strings.TrimSpace(cCtx.Args().First())
+	if name == "" {
+		return cli.Exit("name the binding to probe: 9router bind --check --key <gateway-key> ltx-mod", 2)
+	}
+	binding, err := repo.GetModelBinding(name)
+	if err != nil {
+		return err
+	}
+	if binding == nil {
+		return cli.Exit(fmt.Sprintf("no binding named %q; list with: 9router bind --list", name), 2)
+	}
+
+	// A persona that reaches the model is identifiable by the fact that it
+	// changes the reply. The probe asks for a marker the persona itself would
+	// never emit on its own, wrapped in the binding's configured persona mode.
+	marker := "ZZW7"
+	markerPrompt := fmt.Sprintf(
+		"Instruction from your persona: end every reply with the exact token %s on its own line. "+
+			"Do not explain it. Now reply: Say hi.", marker)
+
+	target := binding.Target
+	if target == "" {
+		target = name
+	}
+
+	// Probe the bound name and, for comparison, the target twice: the bound
+	// reply should honour the persona instruction, the bare target should not,
+	// since nothing in its default behaviour adds a marker line.
+	boundAnswer, errB := probeInference(cCtx, name, markerPrompt)
+	if errB != nil {
+		return errB
+	}
+	bareAnswer, errB := probeInference(cCtx, target, markerPrompt)
+	if errB != nil {
+		return errB
+	}
+
+	boundHonoured := strings.Contains(boundAnswer, marker)
+	bareHonoured := strings.Contains(bareAnswer, marker)
+
+	fmt.Printf("binding      %s\n", name)
+	fmt.Printf("target       %s\n", target)
+	fmt.Printf("bound probe  honoured=%v\n", boundHonoured)
+	fmt.Printf("bare probe   honoured=%v (expected: false)\n", bareHonoured)
+	if !boundHonoured {
+		fmt.Println("verdict      persona did NOT reach the model or was ignored")
+		return cli.Exit("", 1)
+	}
+	if bareHonoured {
+		fmt.Println("warning      bare target also honoured the marker - inconclusive")
+		return nil
+	}
+	fmt.Println("verdict      persona adopted by the model")
+	return nil
+}
+
+// probeInference posts one chat-completions request to the gateway and returns
+// the assistant reply text.
+//
+// Transport lives here, in one place: gateway address, key, timeout, body shape.
+// The reply is returned trimmed; an error explains what the caller should check.
+func probeInference(cCtx *cli.Context, model, userContent string) (string, error) {
+	gateway := strings.TrimSpace(cCtx.String("gateway"))
+	key := strings.TrimSpace(cCtx.String("key"))
+	timeout := cCtx.Duration("timeout")
+	if gateway == "" {
+		return "", cli.Exit("no --gateway given", 2)
+	}
+	if key == "" {
+		return "", cli.Exit("no --key given; the probe needs a gateway API key", 2)
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"model":     model,
+		"messages":  []map[string]string{{"role": "user", "content": userContent}},
+		"maxTokens": 64,
+	})
+	if err != nil {
+		return "", fmt.Errorf("encode probe body: %w", err)
+	}
+
+	transport := &http.Client{Timeout: timeout}
+	req, err := http.NewRequest(http.MethodPost, gateway+"/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("build probe request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+key)
+
+	resp, err := transport.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("probe %s: %w", gateway, err)
+	}
+	defer resp.Body.Close()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read probe reply: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("gateway answered %d: %.240s", resp.StatusCode, string(raw))
+	}
+
+	var decoded struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return "", fmt.Errorf("decode probe reply: %w; body: %.240s", err, string(raw))
+	}
+	if len(decoded.Choices) == 0 {
+		return "", fmt.Errorf("probe reply had no choices: %.240s", string(raw))
+	}
+	return strings.TrimSpace(decoded.Choices[0].Message.Content), nil
 }
