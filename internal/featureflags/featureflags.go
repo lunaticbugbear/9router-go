@@ -73,9 +73,9 @@ const (
 // registry is append-only. Order here is the order the dashboard renders.
 var registry = []Flag{
 	// --- Routing ------------------------------------------------------------
-	{ID: "routing.combos", Title: "Model combos", Description: "Route one model name across several providers with fallback, rotation, or fusion strategies. Turning this off makes every name resolve to exactly one target.", Default: true, Category: CategoryRouting},
+	{ID: "routing.combos", Title: "Model combos", Description: "Route one model name across several providers with fallback, rotation, or fusion strategies. Turning this off stops combo expansion, so a combo name falls back to alias and catalog resolution.", Default: true, Category: CategoryRouting},
 	{ID: "routing.multi-account", Title: "Multi-account rotation", Description: "Round-robin between multiple credentials of the same provider so one account's quota is not drained first.", Stage: Planned, Category: CategoryRouting},
-	{ID: "routing.sticky-sessions", Title: "Sticky sessions", Description: "Keep requests from one client session on the same upstream account, so cached context and rate buckets stay warm.", Default: true, Category: CategoryRouting},
+	{ID: "routing.sticky-sessions", Title: "Sticky sessions", Description: "Keep consecutive requests on the same upstream account, so cached context and rate buckets stay warm. Turning this off sends one request per account instead; rotation and combos keep working.", Default: true, Category: CategoryRouting},
 	{ID: "routing.conditional", Title: "Conditional routing", Description: "Reroute by request shape: long contexts to wide-window models, images to vision-capable ones.", Stage: Planned, Category: CategoryRouting},
 	{ID: "routing.performance-learning", Title: "Performance-aware routing", Description: "Prefer the upstream that actually answered fastest and cleanest in your own traffic, measured from request history.", Stage: Planned, Category: CategoryRouting},
 	{ID: "routing.quota-aware", Title: "Quota-aware scheduling", Description: "Spread load across accounts in proportion to each one's remaining quota instead of draining them in order.", Stage: Planned, Category: CategoryRouting},
@@ -86,17 +86,17 @@ var registry = []Flag{
 	{ID: "tokensavers.verified-savings", Title: "Verified savings report", Description: "Measure what the savers actually saved per request from your own history, instead of trusting a percentage claim.", Stage: Planned, Category: CategoryTokens},
 
 	// --- Observation --------------------------------------------------------
-	{ID: "observation.session-tracing", Title: "Session tracing", Description: "Group requests by client session and show cost, latency, and model use per session in the dashboard.", Default: true, Category: CategoryObservation},
+	{ID: "observation.session-tracing", Title: "Session tracing", Description: "Record the client session id on each usage row so cost, latency, and model use can be grouped per session. Turning this off leaves requests unattributed. Dashboard view planned.", Default: true, Category: CategoryObservation},
 	{ID: "observation.identity-drift", Title: "Identity drift detection", Description: "Flag upstreams that answer a model name with a different identity than they did before — a sign of silent backend switching.", Stage: Planned, Category: CategoryObservation},
 	{ID: "observation.capability-ledger", Title: "Provider capability ledger", Description: "Record per provider what has actually been proven: system-prompt support, token accounting honesty, real context window. Routing decisions consult it.", Stage: Planned, Category: CategoryObservation},
 	{ID: "observation.bodies", Title: "Store request bodies", Description: "Keep full request/response bodies in the log for replay and debugging. Off by default: bodies can contain your code and secrets.", Stage: Planned, Category: CategoryObservation},
 	{ID: "observation.playground", Title: "Dashboard playground", Description: "Try models, prompts, and personas from the dashboard before committing them to a binding.", Stage: Planned, Category: CategoryObservation},
-	{ID: "observation.model-audit", Title: "Model catalog audit", Description: "Show which advertised context windows are rule-based and which are fallback guesses.", Default: true, Category: CategoryObservation},
+	{ID: "observation.model-audit", Title: "Model catalog audit", Description: "Show which advertised context windows are rule-based and which are fallback guesses, via `9router models audit`. Turning this off makes that command refuse to run.", Default: true, Category: CategoryObservation},
 
 	// --- Prompt plane -------------------------------------------------------
 	{ID: "prompt.personas", Title: "Persona loader", Description: "Operator-declared system-prompt additions selected by header, default, or model binding. The core of persona-bound model names. Turning this off makes the whole plane inert: no selector applies a persona.", Default: true, Category: CategoryPrompt},
 	{ID: "prompt.bindings", Title: "Persona-bound model names", Description: "Create model names that carry a persona automatically, like a provider's -mod variants but under your control. Turning this off stops the rewrite a binding performs, so a bound name falls back to alias and catalog resolution.", Default: true, Category: CategoryPrompt},
-	{ID: "prompt.bounty", Title: "Bounty authorization context", Description: "Attach your declared bug-bounty program scope to requests so providers can distinguish authorized testing from unscoped probing.", Default: true, Category: CategoryPrompt},
+	{ID: "prompt.bounty", Title: "Bounty authorization context", Description: "Attach your declared bug-bounty program scope to requests so providers can distinguish authorized testing from unscoped probing. Turning this off makes the whole feature inert: no profile is resolved and no scope block is attached.", Default: true, Category: CategoryPrompt},
 	{ID: "prompt.guardrails", Title: "Declarative guardrails", Description: "Define input and output checks with deny or retry behavior, instead of relying only on the injection guard flag.", Stage: Planned, Category: CategoryPrompt},
 	{ID: "prompt.versioning", Title: "Persona versioning", Description: "Keep a history of every persona edit and roll back a bad change from the dashboard or CLI.", Stage: Planned, Category: CategoryPrompt},
 

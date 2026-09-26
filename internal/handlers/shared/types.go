@@ -23,14 +23,14 @@ type ModelInfo struct {
 
 // ConnectionData holds parsed fields from the providerConnections.data JSON blob.
 type ConnectionData struct {
-	APIKey                 string                 `json:"apiKey"`
-	AccessToken            string                 `json:"accessToken"`
-	BaseURL                string                 `json:"baseUrl,omitempty"`
-	ProxyPoolID            string                 `json:"proxyPoolId,omitempty"`
-	ConnectionProxyEnabled bool                   `json:"connectionProxyEnabled,omitempty"`
-	ConnectionProxyURL     string                 `json:"connectionProxyUrl,omitempty"`
-	ConnectionNoProxy      string                 `json:"connectionNoProxy,omitempty"`
-	StrictProxy            bool                   `json:"strictProxy,omitempty"`
+	APIKey                 string         `json:"apiKey"`
+	AccessToken            string         `json:"accessToken"`
+	BaseURL                string         `json:"baseUrl,omitempty"`
+	ProxyPoolID            string         `json:"proxyPoolId,omitempty"`
+	ConnectionProxyEnabled bool           `json:"connectionProxyEnabled,omitempty"`
+	ConnectionProxyURL     string         `json:"connectionProxyUrl,omitempty"`
+	ConnectionNoProxy      string         `json:"connectionNoProxy,omitempty"`
+	StrictProxy            bool           `json:"strictProxy,omitempty"`
 	ProviderSpecificData   map[string]any `json:"providerSpecificData,omitempty"`
 }
 
@@ -41,6 +41,11 @@ type UsageLogInfo struct {
 	ConnectionID string
 	APIKey       string
 	Endpoint     string
+	// SessionID is the client-declared conversation id, when the request
+	// carried one. It is only written to storage while the
+	// observation.session-tracing flag is on; callers may always populate it and
+	// let logUsage decide, so the gate lives in exactly one place.
+	SessionID string
 }
 
 // ResponseCaptureMax is the maximum response content retained for token
@@ -78,6 +83,7 @@ func (b *ResponseBuf) Write(p []byte) (int, error) {
 func (b *ResponseBuf) String() string {
 	return string(b.buf)
 }
+
 // Len returns the number of captured bytes.
 func (b *ResponseBuf) Len() int {
 	return len(b.buf)
@@ -87,7 +93,6 @@ func (b *ResponseBuf) Len() int {
 func (b *ResponseBuf) Bytes() []byte {
 	return b.buf
 }
-
 
 // StreamMetrics captures timing and content during a proxied stream.
 type StreamMetrics struct {

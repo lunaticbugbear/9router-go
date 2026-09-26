@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"9router/proxy/internal/db"
+	"9router/proxy/internal/featureflags"
 	"9router/proxy/internal/providers"
 )
 
@@ -108,6 +110,45 @@ func openDBForCommand() (*sql.DB, error) {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
 	return conn, nil
+}
+
+// featureFlagEnabledForCLI resolves one feature flag's effective state for a CLI
+// command, reading the same settings row the running gateway reads.
+//
+// A CLI command has no handler and no request, so it cannot use the chat
+// package's helper; this is the command-side equivalent, kept here so every
+// gated command resolves flags the same way.
+//
+// Storage failures are reported rather than swallowed. Unlike the request plane
+// — where falling back to the registry default keeps traffic flowing — a CLI
+// command that cannot read the flag would otherwise guess whether to refuse, and
+// guessing "enabled" silently ignores the operator's choice while guessing
+// "disabled" reports a feature as off when it is on. Returning the error lets
+// the operator see the real problem. A missing database file is the one
+// exception: that is a fresh install, where every flag is at its registry
+// default, so it is not an error.
+func featureFlagEnabledForCLI(id string) (bool, error) {
+	def, known := featureflags.Get(id)
+	if !known {
+		return false, fmt.Errorf("unknown feature flag %q", id)
+	}
+	conn, err := openDBForCommand()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return def.Default, nil
+		}
+		return false, err
+	}
+	defer conn.Close()
+	flags, err := db.NewRepo(conn).GetFeatureFlags()
+	if err != nil {
+		return false, fmt.Errorf("read feature flag %q: %w", id, err)
+	}
+	on, ok := flags[id]
+	if !ok {
+		return def.Default, nil
+	}
+	return on, nil
 }
 
 // doctorCheck names one diagnosable property of an install.
@@ -226,7 +267,21 @@ func runInitDB(_ *cli.Context) error {
 //
 // The exit code stays 0 because a guess is a fact about the catalog, not a
 // command failure; --strict turns the count into a gate for scripts.
+//
+// Gated on observation.model-audit: this is a read-only view, so switching it
+// off means refusing to produce it rather than producing a degraded one. The
+// refusal is explicit and exits non-zero, because a script that asked for an
+// audit and silently received nothing (or an empty report) would treat a
+// disabled feature as a clean catalog.
 func runModelsAudit(cCtx *cli.Context) error {
+	enabled, err := featureFlagEnabledForCLI("observation.model-audit")
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return cli.Exit("Model catalog audit is disabled (feature flag observation.model-audit is off). Enable it in the dashboard under Settings > Features, then retry.", 1)
+	}
+
 	all, guessed := providers.AuditLimits()
 	lines := providers.SummarizeLimits(all, guessed)
 	if cCtx.Bool("verbose") {

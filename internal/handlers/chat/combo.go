@@ -361,9 +361,21 @@ func (h *ChatHandler) ApplyComboStrategy(strategy string, models []string, combo
 // applyComboStrategy is ApplyComboStrategy with turn awareness: the rotation
 // index advances only on a new turn (newTurn=true), so a mid-turn tool-use
 // sequence stays on the same provider/model.
+//
+// The sticky-limit half is gated on routing.sticky-sessions. With the flag off,
+// rotation still happens and combos still work — only the stickiness is dropped,
+// so every new turn picks the next model fresh (stickyLimit is forced to 1). The
+// gate is applied here rather than by clearing the strategy, because "sticky" and
+// "round-robin" both route through this same branch and an operator switching off
+// stickiness must not lose round-robin rotation with it.
 func (h *ChatHandler) applyComboStrategy(strategy string, models []string, comboName string, stickyLimit int, newTurn bool) []string {
 	if len(models) <= 1 {
 		return models
+	}
+	if !h.featureFlagOn(flagStickySessions) {
+		// One request per model: the rotation pointer still advances on each new
+		// turn, so traffic keeps spreading across the combo.
+		stickyLimit = 1
 	}
 
 	switch strategy {

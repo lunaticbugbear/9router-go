@@ -21,7 +21,52 @@ const (
 	// Caveman and Ponytail are separate, still-planned flags and are not gated
 	// here.
 	flagRTKSaver = "tokensavers.rtk"
+	// flagRoutingCombos is "routing.combos": gates combo expansion in model
+	// resolution. Off means a combo name resolves through alias/catalog as if
+	// the combo table were empty.
+	flagRoutingCombos = "routing.combos"
+	// flagStickySessions is "routing.sticky-sessions": gates the sticky part of
+	// combo rotation. Off means each request picks the next model fresh; combos
+	// themselves keep working.
+	flagStickySessions = "routing.sticky-sessions"
+	// flagBountyContext is "prompt.bounty": gates bounty scope context. Off means
+	// no profile is resolved and no scope block is attached.
+	flagBountyContext = "prompt.bounty"
+	// flagSessionTracing is "observation.session-tracing": gates recording the
+	// client session id on each usage row. Off means rows are written without a
+	// session id, which is exactly the behavior every existing row has.
+	flagSessionTracing = "observation.session-tracing"
+	// flagModelAudit is "observation.model-audit". Its gate lives in the CLI
+	// (cmd/9router-go's runModelsAudit, which refuses to run when the flag is
+	// off), not in the request plane, so no code in this package reads it. It is
+	// listed in WiredFlagIDs below because that list is the ledger of every
+	// wired Stable flag, not just the ones this package gates.
+	flagModelAudit = "observation.model-audit"
 )
+
+// WiredFlagIDs is the set of feature-flag ids this package actually gates
+// behavior on. It is the honest counterpart to the registry's Stage: the
+// registry says a flag is Stable, meaning "this toggle controls live behavior
+// today", and this list is the evidence.
+//
+// internal/featureflags' TestStableFlagsAreWired cross-checks the two, so a flag
+// cannot be labeled Stable while gating nothing — which is the exact lie the
+// Stage type exists to prevent. Adding a Stable flag therefore requires wiring
+// it and adding its id here; adding it here without a gate fails
+// TestWiredFlagIDsAreRegistered or the per-flag OFF-state tests.
+//
+// It is built from the constants above rather than written out separately, so a
+// rename cannot leave this list pointing at a flag that no longer exists.
+var WiredFlagIDs = []string{
+	flagPersonaPlane,
+	flagModelBindings,
+	flagRTKSaver,
+	flagRoutingCombos,
+	flagStickySessions,
+	flagBountyContext,
+	flagSessionTracing,
+	flagModelAudit,
+}
 
 // featureFlags resolves the effective on/off state of every registered flag.
 //

@@ -68,9 +68,16 @@ func resolveProviderAlias(alias string) string {
 // without combo or alias resolution (used when iterating combo entries).
 // If the entry has no "/" (i.e. it's a combo name), it resolves the combo
 // and returns its first concrete model with the combined model list.
+//
+// The nested-combo lookup is gated on routing.combos as well as the top-level
+// one in resolveModel: a name reaching this entry point must not expand a combo
+// the operator switched off, or the flag would be honoured on one path and
+// ignored on the other. With the flag off a nested combo name is not expanded
+// and returns nil, so the caller's resolution fails rather than silently
+// expanding.
 func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 	if !strings.Contains(entry, "/") {
-		if h.Repo == nil {
+		if h.Repo == nil || !h.featureFlagOn(flagRoutingCombos) {
 			return nil
 		}
 		if combo, err := h.Repo.GetComboByName(entry); err == nil && combo != nil && combo.Models != "" {
@@ -123,6 +130,11 @@ func (h *ChatHandler) resolveModelEntry(entry string) *ModelInfo {
 func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 	out := make([]string, 0, len(models))
 	seen := make(map[string]bool)
+	// Gated on routing.combos for the same reason as the top-level lookup: a
+	// nested combo name must not be expanded into its leaves when the operator
+	// has switched combos off, or the flag would be honoured on one path and
+	// ignored on another. With the flag off a nested name is left as a leaf.
+	combosEnabled := h.featureFlagOn(flagRoutingCombos)
 	var walk func([]string) error
 	walk = func(ms []string) error {
 		for _, m := range ms {
@@ -131,15 +143,17 @@ func (h *ChatHandler) flattenComboModels(models []string) ([]string, error) {
 					log.Warn("combo", "cyclic combo reference detected, skipping", "combo", m)
 					continue
 				}
-				if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
-					var sub []string
-					if err := json.Unmarshal([]byte(combo.Models), &sub); err == nil {
-						seen[m] = true
-						if err := walk(sub); err != nil {
-							return err
+				if combosEnabled {
+					if combo, err := h.Repo.GetComboByName(m); err == nil && combo != nil && combo.Models != "" {
+						var sub []string
+						if err := json.Unmarshal([]byte(combo.Models), &sub); err == nil {
+							seen[m] = true
+							if err := walk(sub); err != nil {
+								return err
+							}
+							delete(seen, m)
+							continue
 						}
-						delete(seen, m)
-						continue
 					}
 				}
 				if aliasTarget, err := h.Repo.GetModelAlias(m); err == nil && aliasTarget != "" && strings.Contains(aliasTarget, "/") {
@@ -283,8 +297,14 @@ func (h *ChatHandler) resolveModel(modelStr string) (*ModelInfo, error) {
 		return &ModelInfo{Provider: "codex", Model: "codex-auto-review"}, nil
 	}
 
-	// 3. Check if it's a combo name
-	if h.Repo != nil {
+	// 3. Check if it's a combo name.
+	//
+	// Gated on routing.combos: with the flag off, a combo name is never expanded
+	// here and falls through to the alias/catalog branches below, resolving
+	// exactly as if the combo table were empty. A name that exists only as a
+	// combo then becomes an unknown model, which is the honest off-state rather
+	// than a silent expansion of a feature the operator switched off.
+	if h.Repo != nil && h.featureFlagOn(flagRoutingCombos) {
 		combo, err := h.Repo.GetComboByName(modelStr)
 		if err == nil && combo != nil && combo.Models != "" {
 			var modelStrings []string

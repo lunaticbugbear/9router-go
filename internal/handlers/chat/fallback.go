@@ -477,6 +477,9 @@ func (h *ChatHandler) tryForwardWithConnection(f forwardRequestParams) error {
 			ConnectionID: connectionID,
 			APIKey:       apiKey,
 			Endpoint:     endpoint,
+			// The session id is carried through unconditionally; logUsage decides
+			// whether to persist it based on observation.session-tracing.
+			SessionID: sessionID,
 		}
 		h.logUsage(logInfo, usage, latencyMs, body, metrics)
 		fwdErr = nil

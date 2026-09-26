@@ -540,3 +540,207 @@ func TestForwardBodyUnchangedWhileRTKFlagOff(t *testing.T) {
 		t.Fatalf("RTK flag off must forward the body unchanged: %s", raw)
 	}
 }
+
+// --- routing.combos ---------------------------------------------------------
+
+// With routing.combos off a combo name must not be expanded, on either branch:
+// the top-level lookup in resolveModel and the nested lookup in
+// resolveModelEntry. A name that exists only as a combo then resolves as if the
+// combo table were empty.
+func TestRoutingCombosOffSkipsBothExpansionBranches(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	// Drop the shared connections so the bare name has nothing else to resolve
+	// through and the off-state is unambiguous.
+	if _, err := database.Exec(`DELETE FROM providerConnections`); err != nil {
+		t.Fatal(err)
+	}
+	repo := db.NewRepo(database)
+	models, _ := json.Marshal([]string{"deepseek/deepseek-chat"})
+	if _, err := database.Exec(`INSERT INTO combos (id, name, kind, models, createdAt, updatedAt) VALUES
+		('c-flags', 'flag-combo', 'fallback', ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`, string(models)); err != nil {
+		t.Fatal(err)
+	}
+	h := NewChatHandler(repo)
+
+	// Flag on: both branches expand.
+	if info, err := h.resolveModel("flag-combo"); err != nil || info == nil || len(info.ComboModels) != 1 {
+		t.Fatalf("flag on must expand the combo: info=%+v err=%v", info, err)
+	}
+	if info := h.resolveModelEntry("flag-combo"); info == nil {
+		t.Fatal("flag on must expand the combo via resolveModelEntry")
+	}
+
+	if err := repo.SetFeatureFlag(flagRoutingCombos, false); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := h.resolveModel("flag-combo"); err == nil {
+		t.Fatalf("flag off must leave the combo name unresolved, got %+v", info)
+	}
+	if info := h.resolveModelEntry("flag-combo"); info != nil {
+		t.Fatalf("flag off must not expand via resolveModelEntry, got %+v", info)
+	}
+
+	// Combos off must not break non-combo resolution.
+	if info, err := h.resolveModel("deepseek/deepseek-chat"); err != nil || info == nil {
+		t.Fatalf("provider/model must still resolve with combos off: %v", err)
+	}
+}
+
+// --- routing.sticky-sessions ------------------------------------------------
+
+// With routing.sticky-sessions off, rotation still happens (combos keep working)
+// but stickiness does not: each call advances to the next model.
+func TestStickySessionsOffRotatesEveryCall(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+	models := []string{"a", "b", "c"}
+
+	// Flag on, limit 3: the first model sticks for three calls.
+	for i := range 3 {
+		if got := h.ApplyComboStrategy("sticky", models, "combo-sticky", 3); got[0] != "a" {
+			t.Fatalf("flag on call %d: expected sticky 'a', got %q", i+1, got[0])
+		}
+	}
+	if got := h.ApplyComboStrategy("sticky", models, "combo-sticky", 3); got[0] != "b" {
+		t.Fatalf("flag on 4th call: expected rotation to 'b', got %q", got[0])
+	}
+
+	if err := repo.SetFeatureFlag(flagStickySessions, false); err != nil {
+		t.Fatal(err)
+	}
+	// Flag off: every call rotates, so the limit of 3 is ignored. The combo still
+	// serves a model each time — rotation is not disabled. A fresh handler is used
+	// so the previous calls' rotation state does not carry over.
+	fresh := NewChatHandler(repo)
+	seen := []string{}
+	for range 3 {
+		got := fresh.ApplyComboStrategy("sticky", models, "combo-off", 3)
+		seen = append(seen, got[0])
+	}
+	if seen[0] == seen[1] {
+		t.Fatalf("flag off must not stick: got %v", seen)
+	}
+	if len(seen) != 3 {
+		t.Fatalf("combos must keep working with sticky off: %v", seen)
+	}
+}
+
+// --- prompt.bounty ----------------------------------------------------------
+
+// With prompt.bounty off the bounty feature is inert: an explicit header resolves
+// to nothing without error, and no scope block is attached to the body.
+func TestBountyFlagOffIgnoresHeaderWithoutError(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	if err := repo.SetBountyProfile(bounty.Profile{
+		ID: "h1-flags", Program: "Demo", InScope: []string{"api.demo.test"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	h := NewChatHandler(repo)
+
+	r := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	r.Header.Set(BountyProfileHeader, "h1-flags")
+	if got, err := h.BountyProfileForRequest(r); err != nil || got == nil {
+		t.Fatalf("flag on must resolve the profile: %+v err=%v", got, err)
+	}
+
+	if err := repo.SetFeatureFlag(flagBountyContext, false); err != nil {
+		t.Fatal(err)
+	}
+	got, err := h.BountyProfileForRequest(r)
+	if err != nil {
+		t.Fatalf("flag off must not error, got %v", err)
+	}
+	if got != nil {
+		t.Fatalf("flag off must resolve no profile, got %+v", got)
+	}
+
+	// The whole plane must resolve empty, so nothing is injected downstream.
+	plane, err := h.PromptPlaneForRequest(r, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plane.Bounty != nil {
+		t.Fatalf("flag off must attach no bounty context: %+v", plane.Bounty)
+	}
+
+	// A header naming an unknown profile is also not an error while off: the
+	// feature is intentionally off, so there is nothing to validate against.
+	unknown := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", nil)
+	unknown.Header.Set(BountyProfileHeader, "never-stored")
+	if _, err := h.BountyProfileForRequest(unknown); err != nil {
+		t.Fatalf("flag off must not validate the header at all, got %v", err)
+	}
+}
+
+// --- observation.session-tracing -------------------------------------------
+
+// With observation.session-tracing off the usage row must be written without a
+// session id — the request is still served and still logged, just unattributed.
+func TestSessionTracingOffOmitsSessionFromUsageRow(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	metaFor := func(sessionID string) string {
+		t.Helper()
+		h.logUsage(&UsageLogInfo{
+			Provider: "deepseek", Model: "deepseek-chat", ConnectionID: "conn-x",
+			Endpoint: "/v1/chat/completions", SessionID: sessionID,
+		}, nil, 1, nil, nil)
+		var meta string
+		if err := database.QueryRow(`SELECT meta FROM usageHistory ORDER BY rowid DESC LIMIT 1`).Scan(&meta); err != nil {
+			t.Fatalf("read meta: %v", err)
+		}
+		return meta
+	}
+
+	// Flag on: the session id is recorded.
+	if meta := metaFor("sess-abc"); !strings.Contains(meta, "sess-abc") {
+		t.Fatalf("flag on must persist the session id, got %s", meta)
+	}
+
+	if err := repo.SetFeatureFlag(flagSessionTracing, false); err != nil {
+		t.Fatal(err)
+	}
+	meta := metaFor("sess-abc")
+	if strings.Contains(meta, "sess-abc") {
+		t.Fatalf("flag off must not persist the session id, got %s", meta)
+	}
+	// The row must still carry its normal attribution: only the session is dropped.
+	for _, want := range []string{"deepseek", "deepseek-chat", "conn-x"} {
+		if !strings.Contains(meta, want) {
+			t.Errorf("flag off dropped unrelated meta field %q: %s", want, meta)
+		}
+	}
+}
+
+// A session id is client-controlled input, so it must not be able to corrupt the
+// stored meta blob.
+func TestSessionTracingEscapesHostileSessionID(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+
+	h.logUsage(&UsageLogInfo{
+		Provider: "p", Model: "m", SessionID: `evil","injected":true`,
+	}, nil, 1, nil, nil)
+	var meta string
+	if err := database.QueryRow(`SELECT meta FROM usageHistory ORDER BY rowid DESC LIMIT 1`).Scan(&meta); err != nil {
+		t.Fatal(err)
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(meta), &parsed); err != nil {
+		t.Fatalf("hostile session id corrupted the meta blob: %v (%s)", err, meta)
+	}
+	if _, injected := parsed["injected"]; injected {
+		t.Fatalf("hostile session id injected a field: %s", meta)
+	}
+}

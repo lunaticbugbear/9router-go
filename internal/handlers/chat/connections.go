@@ -383,9 +383,27 @@ func (h *ChatHandler) ApplyConnectionStrategy(provider string, conns []*models.P
 	return h.applyConnectionStrategy(provider, conns, strat)
 }
 
+// applyConnectionStrategy rotates candidate connections according to the provider's configured strategy.
+//
+// The sticky half is gated on routing.sticky-sessions, like the combo-side gate in
+// applyComboStrategy: with the flag off, sticky rotation is reduced to one request
+// per connection, so load still spreads instead of pinning to the first
+// connection. Gating only the combo side would leave a provider configured for
+// sticky rotation still sticking while the operator had switched stickiness off.
 func (h *ChatHandler) applyConnectionStrategy(provider string, conns []*models.ProviderConnection, strat db.ProviderStrategy) []*models.ProviderConnection {
+	return h.applyConnectionStrategyWithFlags(provider, conns, strat, h.featureFlagOn(flagStickySessions))
+}
+
+// applyConnectionStrategyWithFlags is applyConnectionStrategy with the
+// stickiness decision passed in, so tests can exercise both states without a
+// settings row and the exported wrapper keeps its original signature.
+func (h *ChatHandler) applyConnectionStrategyWithFlags(provider string, conns []*models.ProviderConnection, strat db.ProviderStrategy, stickyEnabled bool) []*models.ProviderConnection {
 	if len(conns) <= 1 {
 		return conns
+	}
+	if !stickyEnabled {
+		// One request per connection: rotation continues, stickiness does not.
+		strat.StickyLimit = 1
 	}
 
 	strategy := strings.ToLower(strings.TrimSpace(strat.RotateStrategy))

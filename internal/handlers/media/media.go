@@ -130,6 +130,7 @@ func (h *MediaHandler) HandleEmbeddings(w http.ResponseWriter, r *http.Request) 
 			ConnectionID: conn.ID,
 			APIKey:       apiKey,
 			Endpoint:     "/embeddings",
+			SessionID:    handlerutil.ExtractSessionID(r),
 		}
 		h.ChatH.LogUsage(logInfo, nil, latencyMs, body, nil)
 	}
@@ -1051,6 +1052,7 @@ func (h *MediaHandler) forwardMediaRequest(w http.ResponseWriter, r *http.Reques
 			ConnectionID: conn.ID,
 			APIKey:       apiKey,
 			Endpoint:     endpoint,
+			SessionID:    handlerutil.ExtractSessionID(r),
 		}
 		h.ChatH.LogUsage(logInfo, nil, latencyMs, body, nil)
 	}

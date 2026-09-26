@@ -53,7 +53,33 @@ func (h *ChatHandler) logUsage(info *UsageLogInfo, usage *translator.OpenAIUsage
 
 	totalTokens := usage.PromptTokens + usage.CompletionTokens
 	cost := pricing.EstimateCost(info.Model, usage.PromptTokens, usage.CompletionTokens)
-	metaJSON := fmt.Sprintf(`{"provider":"%s","model":"%s","connectionId":"%s"}`, info.Provider, info.Model, info.ConnectionID)
+	// The meta blob is built with json.Marshal rather than Sprintf: provider,
+	// model and session id all originate in client-controlled input, and a value
+	// containing a quote would otherwise corrupt the JSON this row stores.
+	metaFields := map[string]string{
+		"provider":     info.Provider,
+		"model":        info.Model,
+		"connectionId": info.ConnectionID,
+	}
+	// Session attribution is gated on observation.session-tracing. This is the
+	// single point where the session id would be persisted: it is added to the
+	// usage row's meta blob only when the flag is on, so a request is still
+	// served and still logged when the flag is off — it is simply unattributed.
+	//
+	// Off is the behavior every existing row already has, because the id was
+	// never persisted before this flag was wired. The id is deliberately not
+	// stripped from the outbound request or from the in-memory tracker: those are
+	// not storage, and the flag's contract is about what is kept, not about what
+	// the request carries.
+	if sessionID := strings.TrimSpace(info.SessionID); sessionID != "" && h.featureFlagOn(flagSessionTracing) {
+		metaFields["sessionId"] = sessionID
+	}
+	metaJSONBytes, err := json.Marshal(metaFields)
+	if err != nil {
+		log.Error("usage", "marshal usage meta failed", "error", err)
+		metaJSONBytes = []byte(`{}`)
+	}
+	metaJSON := string(metaJSONBytes)
 
 	cachedTokens := usage.GetCachedTokens()
 	cacheCreationTokens := usage.CacheCreationInputTokens

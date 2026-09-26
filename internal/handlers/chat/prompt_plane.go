@@ -71,7 +71,22 @@ func bountyID(p *bounty.Profile) string {
 // BountyProfileForRequest resolves the explicit request header to a local
 // profile. It returns nil when the header is absent; no profile is applied by
 // default because one program's scope must not leak into a different request.
+//
+// The prompt.bounty feature flag is the outermost switch and is checked before
+// the header: when it is off the whole feature is inert and no profile is
+// resolved, so no scope block is ever attached to an outbound body.
+//
+// An explicitly-named profile while the flag is off resolves to nothing and is
+// deliberately NOT an error — the same choice the persona plane makes, for the
+// same reason. A header naming an unknown profile is a client mistake worth
+// reporting, but a header naming a valid profile while the operator has switched
+// the feature off is not a mistake: the feature is intentionally off, exactly as
+// configured. Erroring would fail every request from a client that sends the
+// header, turning a deliberate operator choice into an outage.
 func (h *ChatHandler) BountyProfileForRequest(r *http.Request) (*bounty.Profile, error) {
+	if !h.featureFlagOn(flagBountyContext) {
+		return nil, nil
+	}
 	id := strings.TrimSpace(r.Header.Get(BountyProfileHeader))
 	if id == "" {
 		return nil, nil
