@@ -11,7 +11,8 @@ import (
 // coerces numbers to float64 and changes their representation. UseNumber()
 // preserves the original literal.
 func TestCompressMessages_PreservesNumericFields(t *testing.T) {
-	bigContent := strings.Repeat("x", MinCompressSize+10)
+	// The tool payload must be genuinely compressible (a detected filter);
+	// otherwise the body is correctly reported unchanged and nothing re-marshals.
 	body := []byte(`{
 		"model": "gpt-4o",
 		"temperature": 0.7,
@@ -19,7 +20,7 @@ func TestCompressMessages_PreservesNumericFields(t *testing.T) {
 		"large_id": 9007199254740993,
 		"messages": [
 			{"role": "user", "content": "hi"},
-			{"role": "tool", "tool_call_id": "t1", "content": "` + bigContent + `"}
+			{"role": "tool", "tool_call_id": "t1", "content": ` + mustJSON(t, longGitDiff()) + `}
 		]
 	}`)
 
@@ -43,4 +44,14 @@ func TestCompressMessages_PreservesNumericFields(t *testing.T) {
 	if s := strings.Contains(string(out), "9007199254740993"); !s {
 		t.Errorf("large int lost precision in re-marshal: %s", string(out))
 	}
+}
+
+// mustJSON marshals a string into a JSON string literal for embedding.
+func mustJSON(t *testing.T, s string) string {
+	t.Helper()
+	b, err := json.Marshal(s)
+	if err != nil {
+		t.Fatalf("marshal helper value: %v", err)
+	}
+	return string(b)
 }

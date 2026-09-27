@@ -15,7 +15,6 @@
     label: string
     /** Roman numeral prefix; omitted for the footer group. */
     numeral?: string
-    collapsible?: boolean
     links: NavLink[]
   }
 
@@ -59,7 +58,6 @@
       id: 'media',
       numeral: 'IV',
       label: 'Media',
-      collapsible: true,
       links: [
         { tab: 'media-embedding', label: 'Embeddings', icon: 'data_array', hint: 'Vector models' },
         { tab: 'media-image', label: 'Image', icon: 'brush', hint: 'Image generation' },
@@ -136,10 +134,17 @@
 
   let version = $state('')
   const MEDIA_OPEN_KEY = '9router-nav-media-open'
+  const GROUP_OPEN_KEY = '9router-nav-group-'
 
-  let isMediaOpen = $state(
-    typeof localStorage !== 'undefined' && localStorage.getItem(MEDIA_OPEN_KEY) === '1'
-  )
+  let openGroups = $state<Record<string, boolean>>(Object.fromEntries(
+    NAV_GROUPS.map((group) => {
+      let saved: string | null = null
+      try {
+        saved = localStorage.getItem(group.id === 'media' ? MEDIA_OPEN_KEY : `${GROUP_OPEN_KEY}${group.id}-open`)
+      } catch {}
+      return [group.id, saved === null ? group.id !== 'media' : saved === '1']
+    })
+  ))
 
   $effect(() => {
     api
@@ -163,18 +168,16 @@
     return linkMatches(link, activeTab)
   }
 
-  function toggleMedia() {
-    isMediaOpen = !isMediaOpen
+  function toggleGroup(id: string) {
+    openGroups[id] = !openGroups[id]
     try {
-      localStorage.setItem(MEDIA_OPEN_KEY, isMediaOpen ? '1' : '0')
+      localStorage.setItem(id === 'media' ? MEDIA_OPEN_KEY : `${GROUP_OPEN_KEY}${id}-open`, openGroups[id] ? '1' : '0')
     } catch {}
   }
 
-  let isMediaActive = $derived(activeTab.startsWith('media-'))
-
-  // Reveal the collapsed group when a deep link or the palette lands inside it.
   $effect(() => {
-    if (isMediaActive) isMediaOpen = true
+    const group = NAV_GROUPS.find((item) => item.links.some((link) => linkMatches(link, activeTab)))
+    if (group) openGroups[group.id] = true
   })
 
   const gatewayLabel = $derived(
@@ -244,44 +247,35 @@
         {#if collapsed}
           <h2 id="nav-heading-{group.id}" class="sr-only">{group.label}</h2>
           {#if gi > 0}<div class="mx-2 mb-3 h-px bg-border-subtle" aria-hidden="true"></div>{/if}
-          {#if group.collapsible && !isMediaOpen}
-            <button
-              type="button"
-              onclick={toggleMedia}
-              aria-expanded={isMediaOpen}
-              aria-controls="nav-links-{group.id}"
-              aria-label="Show {group.label}"
-              title={group.label}
-              class="flex w-full cursor-pointer items-center justify-center rounded-brand py-1.5 transition-colors hover:bg-surface-2 {isMediaActive
-                ? 'text-primary'
-                : 'text-text-subtle hover:text-text-muted'}"
-            >
-              <Icon name="media" />
-            </button>
-          {/if}
-        {:else if group.collapsible}
+          <button
+            type="button"
+            onclick={() => toggleGroup(group.id)}
+            aria-expanded={openGroups[group.id]}
+            aria-controls="nav-links-{group.id}"
+            aria-label="{openGroups[group.id] ? 'Hide' : 'Show'} {group.label}"
+            title="{group.label} · {openGroups[group.id] ? 'Collapse' : 'Expand'}"
+            class="flex w-full cursor-pointer items-center justify-center rounded-brand py-1.5 transition-colors hover:bg-surface-2 {group.links.some((link) => isLinkActive(link))
+              ? 'text-primary'
+              : 'text-text-subtle hover:text-text-muted'}"
+          >
+            <Icon name={group.id === 'media' ? 'media' : group.links[0].icon} />
+          </button>
+        {:else}
           <h2 id="nav-heading-{group.id}">
             <button
               type="button"
-              onclick={toggleMedia}
-              aria-expanded={isMediaOpen}
+              onclick={() => toggleGroup(group.id)}
+              aria-expanded={openGroups[group.id]}
               aria-controls="nav-links-{group.id}"
               class="flex w-full cursor-pointer items-center justify-between px-3 pb-1.5 font-code text-[10px] font-semibold uppercase tracking-[0.16em] text-text-subtle transition-colors hover:text-text-muted"
             >
               <span><span class="text-brass">{group.numeral}</span> · {group.label}</span>
-              <Icon name="chevron-down" size={14} class="transition-transform duration-150 ease-imperial {isMediaOpen ? 'rotate-180' : ''}" />
+              <Icon name="chevron-down" size={14} class="transition-transform duration-150 ease-imperial {openGroups[group.id] ? 'rotate-180' : ''}" />
             </button>
-          </h2>
-        {:else}
-          <h2
-            id="nav-heading-{group.id}"
-            class="px-3 pb-1.5 font-code text-[10px] font-semibold uppercase tracking-[0.16em] text-text-subtle"
-          >
-            <span class="text-brass">{group.numeral}</span> · {group.label}
           </h2>
         {/if}
 
-        {#if !group.collapsible || isMediaOpen}
+        {#if openGroups[group.id]}
           <ul id="nav-links-{group.id}" class="space-y-0.5">
             {#each group.links as link (link.tab)}
               {@render navItem(link)}

@@ -409,6 +409,8 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
               used: Number(quota.used) || 0,
               total: Number(quota.total) || 0,
               resetAt: (quota.resetAt as string) || null,
+              remainingPercentage: quota.remainingPercentage !== undefined ? Number(quota.remainingPercentage) : undefined,
+              unlimited: quota.unlimited === true,
             })
           })
         }

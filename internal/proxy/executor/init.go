@@ -14,7 +14,7 @@ func RegisterAll() {
 	Register("fireworks", func() Executor { return ForwardOpenAI })
 	Register("opencode", func() Executor { return ForwardOpencode })
 	Register("gemini", func() Executor { return ForwardOpenAI })
-	Register("github", func() Executor { return ForwardOpenAI })
+	Register("github", func() Executor { return ForwardGitHub })
 	Register("mistral", func() Executor { return ForwardOpenAI })
 	Register("perplexity", func() Executor { return ForwardOpenAI })
 	Register("xai", func() Executor { return ForwardOpenAI })

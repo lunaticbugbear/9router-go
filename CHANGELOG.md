@@ -3,6 +3,14 @@
 
 ## [Unreleased]
 
+### Token Saver (RTK) output parity
+
+- Token Saver no longer rewrites ordinary conversation text. It previously truncated any long `text` block — including user and assistant messages — as if it were tool output. Only tool output is compressed now, matching the upstream Rust `rtk-ai/rtk` and the `open-sse/rtk` port.
+- Claude `tool_result` output is read from its `content` field, in both the string and text-block-array forms. The port had read `text`, so real Claude tool results were never compressed and the toggle looked inert on `/v1/messages` traffic.
+- `tool_result` blocks marked `is_error: true` are skipped so error traces reach the model intact.
+- OpenAI tool messages with array content and `function_call_output` with a text-block array are compressed (previously only the string forms were handled).
+- Added the upstream never-worse guard: a filter result that is empty or larger than the raw text falls back to the raw text, and blobs above the 10 MiB `RAW_CAP` are passed through.
+
 ### Proxy pool schema bootstrap
 
 - `9router init-db` now creates the `proxyPools` table. Existing installs whose canonical schema predates proxy pools can run the idempotent command to fix `/api/proxy-pools` returning 500; existing rows are untouched.
@@ -19,6 +27,13 @@
 - Console Log, CLI tool scan, version, and changelog endpoints now accept the dashboard login session instead of requiring a client API key (they returned 401 "Invalid API key" when no key existed). An expired session now returns to the login page instead of rendering an empty dashboard.
 - CLI Tools: tool detail now has "Ask AI to set it up" when a provider is connected. It asks one of your own models (through the gateway, via the dashboard session) for tailored setup steps; API keys are redacted to `<your-api-key>` and nothing is executed automatically.
 - CLI Tools one-click setup (port of the original per-tool installers) for Claude Code, Codex, OpenCode, Hermes, GitHub Copilot (VS Code) and Claude Cowork: writes the gateway URL, a client key (auto-created "CLI tools (auto)" when none exists) and the chosen model into each tool's own config; "Remove" strips only 9router keys. Unrelated settings are kept, the original file is backed up once as `*.9router.bak`, and unparseable configs are refused instead of overwritten. Cowork omits the original's security-relaxation profile and MCP injection. Status cards now show "Connected" when a tool already points at 9router.
+- Device-flow logins (GitHub Copilot, Kiro, Kimi, etc.) no longer get stuck on "Waiting…" after you approve: GitHub's `slow_down` reply is now honored (the poll interval backs off by 5 s), and "Check now" can't poll faster than the interval. The modal no longer asks for a localhost callback URL, since device logins don't have one.
+- GitHub Copilot connections can now list models (chat models from `api.githubcopilot.com/models`, disabled ones hidden) instead of failing with "does not support models listing".
+- All provider model registries now offer Test all: runs existing model checks sequentially, confirms quota use first, reports pass/fail progress per model, and can stop after the current request. Requires an active connection.
+- GitHub Copilot quota now fetches paid and free plan limits with the GitHub OAuth token; premium requests show their used, remaining, and reset values, while unlimited chat/completions are labeled Unlimited.
+- GitHub Copilot retries `/responses` only when `/chat/completions` explicitly rejects a non-Claude/non-Gemini model with `unsupported_api_for_model`; model-test errors in the registry now show a short summary, with the full error available on hover.
+- Overview Recent requests now uses fixed-width columns with the provider name below each model; long custom provider IDs remain available on hover without stretching the table or its rows.
+- Sidebar navigation groups now all expand and collapse independently, persist their state, and reveal a group when navigation lands inside it; the existing Media preference is retained.
 - One-click setup now also covers Factory Droid, Open Claw, Kilo Code, Cline, Grok Build, DeepSeek TUI and jcode (all except Devin, which has no config to write: it authenticates with `devin auth login`). Grok Build is edited line by line so comments survive and the previous default model is restored on Remove. DeepSeek TUI is merged instead of overwriting the whole file as upstream did. Kilo, Cline and DeepSeek Remove only undo entries that point at this gateway. Open Claw per-agent `models.json` is written only for agent dirs inside your home directory.
 - Overview: gateway panel stats are a compact label/value list, compact empty states are lighter and equal height, shortcut hints no longer truncate, and the duplicate "Add provider" actions were removed (Shortcuts now links Quota).
 - Opening a media provider (e.g. TTS → Edge TTS) no longer throws `DataCloneError` from `history.pushState`, so its URL updates and Back works. Added the missing Ollama Search icon (was a 404).

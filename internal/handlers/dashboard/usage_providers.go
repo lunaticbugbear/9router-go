@@ -71,6 +71,8 @@ func fetchProviderUsage(ctx context.Context, provider string, data map[string]an
 		return fetchDeepseekUsage(ctx, apiKey), true
 	case "groq":
 		return fetchGroqUsage(ctx, apiKey), true
+	case "github":
+		return fetchGitHubUsage(ctx, firstNonEmptyStr(accessToken, apiKey)), true
 	case "commandcode":
 		return fetchCommandCodeUsage(ctx, apiKey), true
 	case "ollama":
@@ -266,6 +268,66 @@ func firstNonEmptyStr(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func fetchGitHubUsage(ctx context.Context, accessToken string) usageResult {
+	if accessToken == "" {
+		return usageResult{message: "GitHub Copilot needs a GitHub access token. Reconnect the account."}
+	}
+	status, _, out, err := usageGet(ctx, "https://api.github.com/copilot_internal/user", map[string]string{
+		"Authorization":         "token " + accessToken,
+		"Accept":                "application/json",
+		"X-GitHub-Api-Version":  "2025-04-01",
+		"User-Agent":            "GitHubCopilotChat/0.26.7",
+		"Editor-Version":        "vscode/1.100.0",
+		"Editor-Plugin-Version": "copilot-chat/0.26.7",
+	})
+	if err != nil {
+		return usageResult{message: "Could not fetch GitHub Copilot quota: " + err.Error()}
+	}
+	if status != http.StatusOK {
+		return usageResult{message: fmt.Sprintf("GitHub Copilot quota request returned %d.", status)}
+	}
+	data := usageJSON(out)
+	if data == nil {
+		return usageResult{message: "GitHub Copilot quota response was not JSON."}
+	}
+	return parseGitHubUsage(data)
+}
+
+func parseGitHubUsage(data map[string]any) usageResult {
+	plan := firstNonEmptyStr(usageStr(data["copilot_plan"]), usageStr(data["access_type_sku"]))
+	quotas := map[string]any{}
+	if snapshots, ok := data["quota_snapshots"].(map[string]any); ok {
+		resetAt := usageResetTime(data["quota_reset_date"])
+		for _, name := range []string{"chat", "completions", "premium_interactions"} {
+			snapshot, ok := snapshots[name].(map[string]any)
+			if !ok {
+				continue
+			}
+			total := usageNum(snapshot["entitlement"], 0)
+			remaining := usageNum(snapshot["remaining"], 0)
+			quota := usageQuota(total-remaining, total, resetAt)
+			quota["remaining"] = remaining
+			quota["unlimited"] = snapshot["unlimited"] == true
+			if percent, ok := usageFiniteNum(snapshot["percent_remaining"]); ok {
+				quota["remainingPercentage"] = percent
+			}
+			quotas[name] = quota
+		}
+	} else if monthly, ok := data["monthly_quotas"].(map[string]any); ok {
+		used, _ := data["limited_user_quotas"].(map[string]any)
+		resetAt := usageResetTime(data["limited_user_reset_date"])
+		for _, name := range []string{"chat", "completions"} {
+			if limit, ok := usageFiniteNum(monthly[name]); ok {
+				quotas[name] = usageQuota(usageNum(used[name], 0), limit, resetAt)
+			}
+		}
+	}
+	if len(quotas) == 0 {
+		return usageResult{plan: plan, message: "GitHub Copilot connected, but quota data is unavailable."}
+	}
+	return usageResult{plan: plan, quotas: quotas}
 }
 
 // ---------- deepseek: GET /user/balance ----------
@@ -607,8 +669,8 @@ func fetchOllamaUsage(ctx context.Context, apiKey string) usageResult {
 	}
 	plan := "Ollama Cloud"
 	meHeaders := map[string]string{
-		"Authorization": "Bearer " + strings.TrimSpace(apiKey),
-		"Accept":        "application/json",
+		"Authorization":  "Bearer " + strings.TrimSpace(apiKey),
+		"Accept":         "application/json",
 		"Content-Length": "0",
 	}
 	if s, _, meOut, meErr := usageDo(ctx, http.MethodPost, "https://ollama.com/api/me", meHeaders, nil); meErr == nil && s >= 200 && s < 300 {
@@ -729,14 +791,14 @@ func fetchQoderUsage(ctx context.Context, accessToken string) usageResult {
 // ---------- codebuddy-intl: POST billing meter ----------
 
 var codebuddyIntlHeaders = map[string]string{
-	"User-Agent":         "IDE/2.108.1 CodeBuddy/2.108.1",
-	"X-Product":          "SaaS",
-	"X-IDE-Type":         "IDE",
-	"X-IDE-Name":         "IDE",
-	"X-Requested-With":   "XMLHttpRequest",
+	"User-Agent":          "IDE/2.108.1 CodeBuddy/2.108.1",
+	"X-Product":           "SaaS",
+	"X-IDE-Type":          "IDE",
+	"X-IDE-Name":          "IDE",
+	"X-Requested-With":    "XMLHttpRequest",
 	"X-Codebuddy-Request": "1",
-	"Content-Type":       "application/json",
-	"Accept":             "application/json",
+	"Content-Type":        "application/json",
+	"Accept":              "application/json",
 }
 
 func codebuddyNum(precise, plain any) float64 {
@@ -851,17 +913,17 @@ func fetchCodeBuddyIntlUsage(ctx context.Context, accessToken, apiKey string) us
 			name = fmt.Sprintf("%s %d", base, seen[base])
 		}
 		quotas[name] = map[string]any{
-			"used": codebuddyNum(acc["CycleCapacityUsedPrecise"], acc["CycleCapacityUsed"]),
-			"total": codebuddyNum(acc["CycleCapacitySizePrecise"], acc["CycleCapacitySize"]),
-			"resetAt": usageResetTimeToNil(acc["CycleEndTime"]),
+			"used":      codebuddyNum(acc["CycleCapacityUsedPrecise"], acc["CycleCapacityUsed"]),
+			"total":     codebuddyNum(acc["CycleCapacitySizePrecise"], acc["CycleCapacitySize"]),
+			"resetAt":   usageResetTimeToNil(acc["CycleEndTime"]),
 			"unlimited": false, "recurring": true,
 		}
 	}
 	for i, acc := range bonuses {
 		quotas[fmt.Sprintf("Bonus Pack %d", i+1)] = map[string]any{
-			"used": codebuddyNum(acc["CapacityUsedPrecise"], acc["CapacityUsed"]),
-			"total": codebuddyNum(acc["CapacitySizePrecise"], acc["CapacitySize"]),
-			"resetAt": usageResetTimeToNil(acc["CycleEndTime"]),
+			"used":      codebuddyNum(acc["CapacityUsedPrecise"], acc["CapacityUsed"]),
+			"total":     codebuddyNum(acc["CapacitySizePrecise"], acc["CapacitySize"]),
+			"resetAt":   usageResetTimeToNil(acc["CycleEndTime"]),
 			"unlimited": false, "recurring": false,
 		}
 	}
@@ -885,9 +947,9 @@ func fetchCodeBuddyIntlUsage(ctx context.Context, accessToken, apiKey string) us
 // ---------- kiro: codewhisperer getUsageLimits (3 attempts) ----------
 
 const (
-	kiroCwHost      = "https://codewhisperer.us-east-1.amazonaws.com"
-	kiroQHost       = "https://q.us-east-1.amazonaws.com"
-	kiroLimitsPath  = "/getUsageLimits"
+	kiroCwHost            = "https://codewhisperer.us-east-1.amazonaws.com"
+	kiroQHost             = "https://q.us-east-1.amazonaws.com"
+	kiroLimitsPath        = "/getUsageLimits"
 	kiroProfileARNBuilder = "arn:aws:codewhisperer:us-east-1:638616132270:profile/AAAACCCCXXXX"
 	kiroProfileARNSocial  = "arn:aws:codewhisperer:us-east-1:699475941385:profile/EHGA3GRVQMUK"
 )
@@ -973,11 +1035,11 @@ func fetchKiroUsage(ctx context.Context, accessToken string, psd map[string]any)
 	}
 	params := url.Values{"isEmailRequired": {"true"}, "origin": {"AI_EDITOR"}, "resourceType": {"AGENTIC_REQUEST"}}
 	type attempt struct {
-		name        string
-		method      string
-		url         string
-		headers     map[string]string
-		body        []byte
+		name    string
+		method  string
+		url     string
+		headers map[string]string
+		body    []byte
 	}
 	postBody := map[string]any{"origin": "AI_EDITOR", "resourceType": "AGENTIC_REQUEST"}
 	if profileARN != "" {
@@ -1067,18 +1129,18 @@ func fetchKiroUsage(ctx context.Context, accessToken string, psd map[string]any)
 // ---------- grok-cli: billing + user ----------
 
 const (
-	grokCliVersion           = "0.2.99"
-	grokCliClientIdentifier  = "grok-shell"
-	grokCliUserAgent         = "grok-shell/0.2.99 (linux; x86_64)"
-	grokCliBillingURL        = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
-	grokCliUserURL           = "https://cli-chat-proxy.grok.com/v1/user?include=subscription"
+	grokCliVersion          = "0.2.99"
+	grokCliClientIdentifier = "grok-shell"
+	grokCliUserAgent        = "grok-shell/0.2.99 (linux; x86_64)"
+	grokCliBillingURL       = "https://cli-chat-proxy.grok.com/v1/billing?format=credits"
+	grokCliUserURL          = "https://cli-chat-proxy.grok.com/v1/user?include=subscription"
 )
 
 func grokCliHeaders(accessToken string, psd map[string]any) map[string]string {
 	h := map[string]string{
-		"Authorization": "Bearer " + accessToken,
-		"Accept":        "application/json",
-		"User-Agent":    grokCliUserAgent,
+		"Authorization":            "Bearer " + accessToken,
+		"Accept":                   "application/json",
+		"User-Agent":               grokCliUserAgent,
 		"x-xai-token-auth":         "xai-grok-cli",
 		"x-grok-client-identifier": grokCliClientIdentifier,
 		"x-grok-client-version":    grokCliVersion,
@@ -1100,7 +1162,7 @@ func grokMakeQuota(used, total float64, resetAt string) map[string]any {
 		return map[string]any{
 			"used": math.Max(0, used), "total": 0,
 			"remainingPercentage": 100,
-			"resetAt": nil, "unlimited": true,
+			"resetAt":             nil, "unlimited": true,
 		}
 	}
 	return usageQuota(used, total, resetAt)
@@ -1395,7 +1457,7 @@ var antigravityImportantModels = map[string]bool{
 	"gemini-3.5-flash-low": true, "gemini-3.5-flash-extra-low": true,
 	"gemini-pro-agent": true, "gemini-3.1-pro-low": true,
 	"claude-sonnet-4-6": true, "claude-opus-4-6-thinking": true,
-	"gpt-oss-120b-medium": true,
+	"gpt-oss-120b-medium":    true,
 	"gemini-3.1-flash-image": true,
 }
 
@@ -1647,6 +1709,7 @@ func fetchAntigravityDashboardWeekly(ctx context.Context, accessToken, projectID
 	}
 	return result
 }
+
 // antigravityProjectID mirrors chat.extractProjectID (unexported there):
 // cloudaicompanionProject arrives as a string id or an {id} object.
 func antigravityProjectID(val any) string {

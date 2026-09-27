@@ -10,6 +10,9 @@ import (
 
 const (
 	MinCompressSize = 500
+	// RawCap mirrors RAW_CAP in open-sse/rtk/constants.js: blobs above this are
+	// left alone instead of being fed to a filter.
+	RawCap          = 10 * 1024 * 1024
 	SmartTruncHead  = 120
 	SmartTruncTail  = 60
 	SmartTruncMin   = 250
@@ -21,6 +24,15 @@ const (
 
 // CompressMessages compresses tool_result content in LLM request bodies in-place.
 // Returns modified body and true if any compression was applied.
+//
+// Shape parity with open-sse/rtk/index.js compressMessages:
+//   - OpenAI Responses  {type:"function_call_output", output: string | [{type:"input_text",text}]}
+//   - OpenAI tool       {role:"tool", content: string | [{type:"text",text}]}
+//   - Claude blocks     {content:[{type:"tool_result", content: string | [{type:"text",text}]}]}
+//
+// Only tool output is compressed. Ordinary conversation text blocks are not
+// tool output and must reach the model untouched, and tool_result blocks marked
+// is_error:true are skipped so an error trace stays intact.
 func CompressMessages(body []byte) ([]byte, bool) {
 	var rawMap map[string]jsontext.Value
 	if err := json.Unmarshal(body, &rawMap); err != nil {
@@ -50,43 +62,50 @@ func CompressMessages(body []byte) ([]byte, bool) {
 
 	compressed := false
 	for _, msg := range items {
-		// OpenAI Responses: function_call_output
+		// OpenAI Responses: function_call_output, string or text-block array.
 		if msg["type"] == "function_call_output" {
-			if output, ok := msg["output"].(string); ok && len(output) > MinCompressSize {
-				msg["output"] = CompressText(output)
+			if compressOutputField(msg, "output", "input_text") {
 				compressed = true
 			}
 			continue
 		}
 
-		// OpenAI tool message
+		// OpenAI tool message: string content, or an array of text blocks.
 		if msg["role"] == "tool" {
-			if content, ok := msg["content"].(string); ok && len(content) > MinCompressSize {
-				msg["content"] = CompressText(content)
-				compressed = true
+			if content, ok := msg["content"].(string); ok {
+				if c := CompressText(content); c != content {
+					msg["content"] = c
+					compressed = true
+				}
+			} else if contentArr, ok := msg["content"].([]any); ok {
+				if compressTextBlocks(contentArr, "text") {
+					compressed = true
+				}
 			}
 			continue
 		}
 
-		// Claude tool_result in content array
+		// Claude: content[] carrying tool_result blocks.
 		contentArr, ok := msg["content"].([]any)
 		if !ok {
 			continue
 		}
 		for _, part := range contentArr {
 			block, ok := part.(map[string]any)
-			if !ok {
+			if !ok || block["type"] != "tool_result" {
 				continue
 			}
-			if block["type"] == "tool_result" {
-				if text, ok := block["text"].(string); ok && len(text) > MinCompressSize {
-					block["text"] = CompressText(text)
+			// Error traces are diagnostics, not bulk output: keep them intact.
+			if isError, _ := block["is_error"].(bool); isError {
+				continue
+			}
+			if text, ok := block["content"].(string); ok {
+				if c := CompressText(text); c != text {
+					block["content"] = c
 					compressed = true
 				}
-			}
-			if block["type"] == "text" {
-				if text, ok := block["text"].(string); ok && len(text) > MinCompressSize {
-					block["text"] = CompressText(text)
+			} else if nested, ok := block["content"].([]any); ok {
+				if compressTextBlocks(nested, "text") {
 					compressed = true
 				}
 			}
@@ -110,26 +129,76 @@ func CompressMessages(body []byte) ([]byte, bool) {
 	return out, true
 }
 
+// compressOutputField compresses a top-level string field or the text parts of
+// its block array. partType selects which block kind carries the text.
+func compressOutputField(msg map[string]any, field, partType string) bool {
+	if text, ok := msg[field].(string); ok {
+		if c := CompressText(text); c != text {
+			msg[field] = c
+			return true
+		}
+		return false
+	}
+	if arr, ok := msg[field].([]any); ok {
+		return compressTextBlocks(arr, partType)
+	}
+	return false
+}
+
+// compressTextBlocks compresses the text field of every block of partType.
+func compressTextBlocks(blocks []any, partType string) bool {
+	changed := false
+	for _, part := range blocks {
+		block, ok := part.(map[string]any)
+		if !ok || block["type"] != partType {
+			continue
+		}
+		text, ok := block["text"].(string)
+		if !ok {
+			continue
+		}
+		if c := CompressText(text); c != text {
+			block["text"] = c
+			changed = true
+		}
+	}
+	return changed
+}
+
 // CompressText applies content-aware compression.
 func CompressText(text string) string {
 	if len(text) < MinCompressSize {
 		return text
 	}
+	// Mirror RAW_CAP: oversized blobs are passed through rather than filtered.
+	if len(text) > RawCap {
+		return text
+	}
 	trimmed := strings.TrimSpace(text)
 
-	if isGitDiff(trimmed) {
+	out := applyFilter(trimmed)
+	// Never-worse guard (core/guard.rs never_worse, index.js `out.length >= bytesIn`):
+	// an empty or larger result is worse for the model than the raw text.
+	if out == "" || len(out) >= len(text) {
+		return text
+	}
+	return out
+}
+
+// applyFilter selects and runs the content-aware filter for a blob.
+func applyFilter(trimmed string) string {
+	switch {
+	case isGitDiff(trimmed):
 		return compressGitDiff(trimmed)
-	}
-	if isGitLog(trimmed) {
+	case isGitLog(trimmed):
 		return compressGitLog(trimmed)
-	}
-	if isGrepOutput(trimmed) {
+	case isGrepOutput(trimmed):
 		return compressGrep(trimmed)
-	}
-	if isTreeOutput(trimmed) {
+	case isTreeOutput(trimmed):
 		return compressTree(trimmed)
+	default:
+		return smartTruncate(trimmed)
 	}
-	return smartTruncate(trimmed)
 }
 
 func isGitDiff(s string) bool {

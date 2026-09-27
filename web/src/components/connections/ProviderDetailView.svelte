@@ -292,6 +292,9 @@
   let copiedModelId = $state<string | null>(null)
   let modelTestStatuses = $state<Record<string, 'ok' | 'error' | 'testing'>>({})
   let modelTestErrors = $state<Record<string, string | null>>({})
+  let isTestingAllModels = $state(false)
+  let stopTestingAllModels = false
+  let modelTestSummary = $state<{ total: number; completed: number; passed: number; failed: number; stopped: boolean } | null>(null)
 
   // Modals state
   let showRiskNoticeModal = $state(false)
@@ -317,6 +320,8 @@
   let deviceSession: Record<string, unknown> = $state({})
   let deviceInterval = $state(5)
   let devicePollTimer: ReturnType<typeof setInterval> | null = $state(null)
+  let devicePollBusy = false
+  let deviceLastPollAt = 0
   // OAuth auto-handoff: callback tab writes to storage + BroadcastChannel,
   // this modal restores the pending session and auto-submits.
   let autoSubmitted = $state(false)
@@ -1302,6 +1307,7 @@
       deviceCode = res.device_code || ''
       deviceSession = res.session || {}
       deviceInterval = res.interval && res.interval > 0 ? res.interval : 5
+      deviceLastPollAt = 0
       showOAuthModal = true
       if (typeof window !== 'undefined' && oauthAuthUrl) {
         window.open(oauthAuthUrl, '_blank')
@@ -1315,7 +1321,11 @@
   }
 
   async function pollDeviceOnce() {
-    if (!showOAuthModal || !deviceCode) return
+    if (!showOAuthModal || !deviceCode || devicePollBusy) return
+    // Polling faster than the interval makes GitHub answer slow_down forever.
+    if (Date.now() - deviceLastPollAt < deviceInterval * 1000 - 250) return
+    devicePollBusy = true
+    deviceLastPollAt = Date.now()
     try {
       const res = await api.devicePoll(providerId, deviceCode, deviceSession)
       if (res?.status === 'authorized') {
@@ -1325,9 +1335,15 @@
       } else if (res?.status === 'error') {
         stopDevicePoll()
         oauthError = res?.error || 'Authorization failed'
+      } else if (res?.slowDown && devicePollTimer) {
+        deviceInterval += 5
+        clearInterval(devicePollTimer)
+        devicePollTimer = setInterval(pollDeviceOnce, deviceInterval * 1000)
       }
     } catch {
       // Biarkan polling berikutnya mencoba lagi.
+    } finally {
+      devicePollBusy = false
     }
   }
 
@@ -1707,7 +1723,7 @@
     setTimeout(() => (copiedModelId = null), 2000)
   }
 
-  async function testModel(modelId: string) {
+  async function testModel(modelId: string): Promise<boolean> {
     modelTestStatuses[modelId] = 'testing'
     modelTestErrors[modelId] = null
     try {
@@ -1715,6 +1731,7 @@
       if (res.ok) {
         modelTestStatuses[modelId] = 'ok'
         modelTestErrors[modelId] = null
+        return true
       } else {
         modelTestStatuses[modelId] = 'error'
         const err = res.error || 'Model test failed'
@@ -1724,6 +1741,39 @@
       modelTestStatuses[modelId] = 'error'
       const msg = err instanceof Error ? err.message : 'Model test failed'
       modelTestErrors[modelId] = msg
+    }
+    return false
+  }
+
+  function briefModelTestError(error: string): string {
+    const summary = error.split(' Available models:')[0]
+    return summary.length > 180 ? `${summary.slice(0, 177)}...` : summary
+  }
+
+  async function testAllModels(compatible = false) {
+    if (!canImportCompatible || isTestingAllModels || compatibleTestId || Object.values(modelTestStatuses).includes('testing')) return
+    const ids = [...new Set((compatible ? compatibleRows : visibleModels).map((model) => model.id))]
+    if (!ids.length || !confirm(`Test ${ids.length} model(s)? Each test sends a request to the provider and may use quota.`)) return
+    const alias = compatible ? displayAlias() : storageAlias
+    stopTestingAllModels = false
+    isTestingAllModels = true
+    modelTestSummary = { total: ids.length, completed: 0, passed: 0, failed: 0, stopped: false }
+    try {
+      for (const id of ids) {
+        if (stopTestingAllModels || (compatible ? displayAlias() : storageAlias) !== alias) {
+          modelTestSummary = { ...modelTestSummary, stopped: true }
+          break
+        }
+        const passed = compatible ? await handleTestCompatibleModel(id) : await testModel(id)
+        modelTestSummary = {
+          ...modelTestSummary,
+          completed: modelTestSummary.completed + 1,
+          passed: modelTestSummary.passed + (passed ? 1 : 0),
+          failed: modelTestSummary.failed + (passed ? 0 : 1),
+        }
+      }
+    } finally {
+      isTestingAllModels = false
     }
   }
 
@@ -1888,8 +1938,8 @@
     }
   }
 
-  async function handleTestCompatibleModel(modelId: string) {
-    if (compatibleTestId) return
+  async function handleTestCompatibleModel(modelId: string): Promise<boolean> {
+    if (compatibleTestId) return false
     compatibleTestId = modelId
     compatibleTestErrors[modelId] = null
     try {
@@ -1897,6 +1947,7 @@
       if (res.ok) {
         compatibleTestResults[modelId] = 'ok'
         compatibleTestErrors[modelId] = null
+        return true
       } else {
         compatibleTestResults[modelId] = 'error'
         const err = res.error || 'Model test failed'
@@ -1909,6 +1960,7 @@
     } finally {
       compatibleTestId = null
     }
+    return false
   }
 
   function copyCompatibleModel(modelId: string) {
@@ -2767,6 +2819,12 @@
         <h2 id="compatible-models-heading" class="mt-1 text-[15px] font-semibold text-text-main">Models</h2>
         <p class="mt-1 text-xs text-text-muted">Fetch the endpoint catalog or add a model ID directly.</p>
       </div>
+      <div class="flex flex-wrap items-center gap-2">
+      {#if compatibleRows.length > 0}
+        <Button size="sm" variant="secondary" icon="lab" onclick={() => testAllModels(true)} disabled={!canImportCompatible || isTestingAllModels || !!compatibleTestId}>
+          Test all ({compatibleRows.length})
+        </Button>
+      {/if}
       <Button
         icon="download"
         onclick={handleImportCompatibleModels}
@@ -2776,7 +2834,15 @@
       >
         Fetch models
       </Button>
+      </div>
     </header>
+
+    {#if isTestingAllModels || modelTestSummary}
+      <p class="text-xs text-text-muted" role="status">
+        {#if isTestingAllModels}<button type="button" class="mr-2 text-danger underline" onclick={() => (stopTestingAllModels = true)}>Stop</button>{/if}
+        {modelTestSummary?.completed}/{modelTestSummary?.total} tested · {modelTestSummary?.passed} passed · {modelTestSummary?.failed} failed{modelTestSummary?.stopped ? ' · Stopped' : ''}
+      </p>
+    {/if}
 
     {#if compatibleImportMessage}
       <p role={compatibleImportFailed ? 'alert' : 'status'} class="text-xs {compatibleImportFailed ? 'text-danger' : 'text-success'}">
@@ -2852,14 +2918,14 @@
                 {#if tStatus === 'ok'}<span class="font-code text-[10px] text-success">Passed</span>{/if}
                 {#if tStatus === 'error'}<span class="font-code text-[10px] text-danger">Failed</span>{/if}
               </div>
-              {#if tError}<p class="mt-1 break-words text-xs text-danger" role="status">{tError}</p>{/if}
+              {#if tError}<p class="mt-1 break-words text-xs text-danger" title={tError} role="status">{briefModelTestError(tError)}</p>{/if}
             </div>
 
             <div class="flex shrink-0 items-center gap-0.5">
               <button
                 type="button"
                 onclick={() => handleTestCompatibleModel(row.id)}
-                disabled={isTestingRow || !canImportCompatible}
+                disabled={isTestingRow || isTestingAllModels || !canImportCompatible}
                 title={isTestingRow ? 'Testing model' : tError || (tStatus === 'ok' ? 'Test passed' : 'Test model')}
                 aria-label={`Test ${row.id}`}
                 class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:cursor-wait disabled:opacity-50"
@@ -2916,6 +2982,11 @@
       </div>
 
       <div class="flex flex-wrap items-center gap-2">
+        {#if visibleModels.length > 0}
+          <Button size="sm" variant="secondary" icon="lab" onclick={() => testAllModels()} disabled={!canImportCompatible || isTestingAllModels || Object.values(modelTestStatuses).includes('testing')}>
+            Test all ({visibleModels.length})
+          </Button>
+        {/if}
         {#if allAvailableModels.length > 0}
           <Button size="sm" variant="ghost" onclick={handleToggleAllModels} icon={allDisabled ? 'power' : 'blocked'}>
             {allDisabled ? 'Enable all' : 'Disable all'}
@@ -2929,6 +3000,13 @@
         </Button>
       </div>
     </div>
+
+    {#if isTestingAllModels || modelTestSummary}
+      <p class="mb-4 text-xs text-text-muted" role="status">
+        {#if isTestingAllModels}<button type="button" class="mr-2 text-danger underline" onclick={() => (stopTestingAllModels = true)}>Stop</button>{/if}
+        {modelTestSummary?.completed}/{modelTestSummary?.total} tested · {modelTestSummary?.passed} passed · {modelTestSummary?.failed} failed{modelTestSummary?.stopped ? ' · Stopped' : ''}
+      </p>
+    {/if}
 
     <div class="mb-3 flex flex-col gap-3 border-y border-border-subtle py-3 lg:flex-row lg:items-center">
       <label class="relative min-w-0 flex-1">
@@ -3018,12 +3096,12 @@
                 {#if testStatus === 'error'}<span class="text-danger">Test failed</span>{/if}
               </div>
               {#if modelTestErrors[model.id]}
-                <p class="mt-1 break-words text-xs text-danger" role="status">{modelTestErrors[model.id]}</p>
+                <p class="mt-1 break-words text-xs text-danger" title={modelTestErrors[model.id] || ''} role="status">{briefModelTestError(modelTestErrors[model.id] || '')}</p>
               {/if}
             </div>
 
             <div class="flex shrink-0 items-center gap-0.5">
-              <button type="button" onclick={() => testModel(model.id)} disabled={isTestingThis}
+              <button type="button" onclick={() => testModel(model.id)} disabled={isTestingThis || isTestingAllModels}
                 title={isTestingThis ? 'Testing model' : modelTestErrors[model.id] || (testStatus === 'ok' ? 'Test passed' : 'Test model')}
                 aria-label={`Test ${model.id}`}
                 class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:cursor-wait disabled:opacity-60">
@@ -3154,7 +3232,9 @@
             ? 'Authorization link & manual check'
             : isClineOAuth
               ? 'Login di Cline, lalu paste callback'
-              : oauthAuthUrl
+              : deviceUserCode
+                ? 'Device login'
+                : oauthAuthUrl
                 ? 'Or paste callback URL manually'
                 : 'Manual token import'}
         </span>
@@ -3269,6 +3349,11 @@
             </div>
           </div>
         {/if}
+        {#if deviceUserCode}
+          <p class="text-[11px] text-text-muted">
+            Tidak ada callback URL untuk login ini. Setelah halaman login bilang sukses, koneksi tersambung otomatis dalam beberapa detik.
+          </p>
+        {:else}
         <div>
           <p class="text-sm font-medium mb-1">
             {providerId === 'freebuff'
@@ -3298,6 +3383,7 @@
                   : 'Tempel access token di sini lalu klik Connect.'}
           </p>
         </div>
+        {/if}
 
         {#if oauthError}
           <p class="text-xs text-red-500">{oauthError}</p>

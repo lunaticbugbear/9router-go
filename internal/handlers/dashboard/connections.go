@@ -841,6 +841,75 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 		return
 	}
 
+	if conn.Provider == "github" {
+		// The GitHub OAuth token is accepted by the Copilot API directly and, unlike copilotToken, does not expire in 30 min.
+		token := connData.AccessToken
+		if token == "" {
+			token = connData.APIKey
+		}
+		if token == "" {
+			handlerutil.WriteJSONError(w, http.StatusUnauthorized, "no valid token found")
+			return
+		}
+		headers := map[string]string{
+			"Authorization":          "Bearer " + token,
+			"Copilot-Integration-Id": "vscode-chat",
+			"editor-version":         "vscode/1.107.1",
+			"editor-plugin-version":  "copilot-chat/0.26.7",
+			"User-Agent":             "GitHubCopilotChat/0.26.7",
+		}
+		status, body, err := validateProbeDo(r.Context(), http.MethodGet, "https://api.githubcopilot.com/models", headers, nil)
+		if err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, "failed to fetch GitHub Copilot models: "+err.Error())
+			return
+		}
+		if status != http.StatusOK {
+			handlerutil.WriteJSONError(w, status, fmt.Sprintf("failed to fetch models: %d", status))
+			return
+		}
+		var ghResp struct {
+			Data []struct {
+				ID           string `json:"id"`
+				Name         string `json:"name"`
+				Capabilities struct {
+					Type     string `json:"type"`
+					Supports struct {
+						Vision bool `json:"vision"`
+					} `json:"supports"`
+				} `json:"capabilities"`
+				Policy *struct {
+					State string `json:"state"`
+				} `json:"policy"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &ghResp); err != nil {
+			handlerutil.WriteJSONError(w, http.StatusBadGateway, "invalid JSON from GitHub Copilot models")
+			return
+		}
+		modelsList := []modelItem{}
+		seen := map[string]bool{}
+		for _, m := range ghResp.Data {
+			if m.Capabilities.Type != "chat" || (m.Policy != nil && m.Policy.State == "disabled") || seen[m.ID] {
+				continue
+			}
+			seen[m.ID] = true
+			name := m.Name
+			if name == "" {
+				name = m.ID
+			}
+			modelsList = append(modelsList, modelItem{
+				ID: m.ID, Name: name,
+				Capabilities: map[string]bool{"vision": m.Capabilities.Supports.Vision},
+			})
+		}
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
+			"provider":     conn.Provider,
+			"connectionId": conn.ID,
+			"models":       modelsList,
+		})
+		return
+	}
+
 	isOpenAI := strings.HasPrefix(conn.Provider, "openai-compatible-")
 	isAnthropic := strings.HasPrefix(conn.Provider, "anthropic-compatible-")
 	node, nodeData, nodeErr := h.Repo.GetProviderNodeByID(conn.Provider)

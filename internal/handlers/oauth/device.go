@@ -407,7 +407,8 @@ func (h *OAuthHandler) HandleDevicePoll(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if status != "authorized" || strings.TrimSpace(tokens.access) == "" {
-		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "pending", "provider": body.Provider})
+		// RFC 8628: after slow_down the client must add 5s to its interval, or every later poll is slow_down too.
+		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"status": "pending", "slowDown": status == "slow_down", "provider": body.Provider})
 		return
 	}
 	conn := h.saveDeviceConnection(deviceCanonical(body.Provider), tokens)
@@ -446,7 +447,10 @@ func devicePoll(provider, code string, session map[string]any) (deviceTokens, st
 	}
 	if err != nil {
 		msg := err.Error()
-		if strings.Contains(msg, "authorization_pending") || strings.Contains(msg, "slow_down") || strings.Contains(msg, "pending") {
+		if strings.Contains(msg, "slow_down") {
+			return t, "slow_down", ""
+		}
+		if strings.Contains(msg, "authorization_pending") || strings.Contains(msg, "pending") {
 			return t, "pending", ""
 		}
 		return t, "error", msg

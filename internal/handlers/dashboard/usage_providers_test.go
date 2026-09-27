@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -81,6 +82,48 @@ func TestUsageQuotaShape(t *testing.T) {
 	q := usageQuota(25, 100, "2026-01-01T00:00:00Z")
 	if q["remainingPercentage"] != 75.0 || q["resetAt"] != "2026-01-01T00:00:00Z" || q["unlimited"] != false {
 		t.Errorf("unexpected: %v", q)
+	}
+}
+
+func TestGitHubUsagePaid(t *testing.T) {
+	res := parseGitHubUsage(map[string]any{
+		"copilot_plan": "enterprise", "quota_reset_date": "2026-10-01",
+		"quota_snapshots": map[string]any{
+			"chat": map[string]any{"entitlement": float64(0), "remaining": float64(0), "unlimited": true},
+			"premium_interactions": map[string]any{
+				"entitlement": float64(75000), "remaining": float64(56796), "percent_remaining": float64(75.7),
+			},
+		},
+	})
+	if res.plan != "enterprise" || len(res.quotas) != 2 {
+		t.Fatalf("unexpected plan/quotas: %+v", res)
+	}
+	chat := res.quotas["chat"].(map[string]any)
+	if chat["unlimited"] != true || chat["resetAt"] == nil {
+		t.Errorf("unlimited chat quota: %v", chat)
+	}
+	premium := res.quotas["premium_interactions"].(map[string]any)
+	if premium["used"] != float64(18204) || premium["total"] != float64(75000) || premium["remaining"] != float64(56796) || premium["remainingPercentage"] != float64(75.7) {
+		t.Errorf("premium quota: %v", premium)
+	}
+}
+
+func TestGitHubUsageFreeAndMissingToken(t *testing.T) {
+	res := parseGitHubUsage(map[string]any{
+		"access_type_sku": "free", "limited_user_reset_date": "2026-10-01",
+		"monthly_quotas":      map[string]any{"chat": float64(50), "completions": float64(2000)},
+		"limited_user_quotas": map[string]any{"chat": float64(12)},
+	})
+	if res.plan != "free" || len(res.quotas) != 2 {
+		t.Fatalf("unexpected free quotas: %+v", res)
+	}
+	chat := res.quotas["chat"].(map[string]any)
+	if chat["used"] != float64(12) || chat["remainingPercentage"] != float64(76) {
+		t.Errorf("free chat quota: %v", chat)
+	}
+	missing, ok := fetchProviderUsage(context.Background(), "github", nil)
+	if !ok || missing.message == "" || len(missing.quotas) != 0 {
+		t.Errorf("missing GitHub token: %+v (handled=%v)", missing, ok)
 	}
 }
 

@@ -103,6 +103,11 @@
   let inFlight = $derived(stats?.activeRequests?.reduce((sum, r) => sum + (r.count ?? 1), 0) ?? 0)
   let recent = $derived((stats?.recentRequests ?? []).slice(0, 8))
 
+  function providerLabel(id?: string): string {
+    if (!id) return 'Unknown provider'
+    return providerNodes.find((node) => node.id === id)?.name || PROVIDER_CATALOG.find((provider) => provider.id === id)?.name || id
+  }
+
   function statusTone(value?: string): 'success' | 'danger' | 'neutral' {
     const v = (value ?? '').toLowerCase()
     if (v === 'ok' || v === 'success' || v.startsWith('2')) return 'success'
@@ -207,27 +212,28 @@
           description="Requests appear here as soon as a client calls the endpoint."
         />
       {:else}
-        <div class="ui-panel overflow-x-auto custom-scrollbar">
-          <table class="w-full min-w-[560px] text-left text-[13px]">
+        <div class="ui-panel min-w-0 overflow-hidden">
+          <table class="w-full table-fixed text-left text-[13px]">
             <thead class="border-b border-brass/40 bg-bg-alt">
-              <tr class="ui-kicker text-text-subtle">
-                <th class="px-4 py-2.5 font-semibold">Time</th>
-                <th class="px-4 py-2.5 font-semibold">Model</th>
-                <th class="px-4 py-2.5 font-semibold">Provider</th>
-                <th class="px-4 py-2.5 text-right font-semibold">Tokens</th>
-                <th class="px-4 py-2.5 text-right font-semibold">Status</th>
+              <tr class="font-code text-[10.5px] uppercase tracking-[0.14em] text-text-subtle">
+                <th class="w-[5.5rem] px-2 py-2.5 font-semibold sm:px-3">Time</th>
+                <th class="px-2 py-2.5 font-semibold sm:px-3">Model</th>
+                <th class="w-[4.5rem] px-1 py-2.5 text-right font-semibold sm:w-[6rem] sm:px-3">Tokens</th>
+                <th class="w-[4rem] px-2 py-2.5 text-right font-semibold sm:w-[5rem] sm:px-3">Status</th>
               </tr>
             </thead>
             <tbody>
               {#each recent as req, i (i)}
                 <tr class="border-b border-border-subtle last:border-0 even:bg-bg-alt/60 hover:shadow-[inset_2px_0_0_var(--app-focus)]">
-                  <td class="whitespace-nowrap px-4 py-2.5 font-code text-[12px] text-text-subtle">{timeAgo(req.timestamp)}</td>
-                  <td class="max-w-[220px] truncate px-4 py-2.5 font-code text-[12px] text-text-main">{req.model || '—'}</td>
-                  <td class="px-4 py-2.5 text-text-muted">{req.provider || '—'}</td>
-                  <td class="ui-stat px-4 py-2.5 text-right text-[12px] text-text-muted">
+                  <td class="whitespace-nowrap px-2 py-2.5 font-code text-[11px] text-text-subtle sm:px-3">{timeAgo(req.timestamp)}</td>
+                  <td class="min-w-0 px-2 py-2.5 sm:px-3">
+                    <span class="block truncate font-code text-[12px] text-text-main" title={req.model || ''}>{req.model || '—'}</span>
+                    <span class="block truncate text-[11px] text-text-muted" title={req.provider || ''}>{providerLabel(req.provider)}</span>
+                  </td>
+                  <td class="ui-stat px-1 py-2.5 text-right text-[11px] text-text-muted sm:px-3 sm:text-[12px]">
                     {fmt((req.promptTokens ?? 0) + (req.completionTokens ?? 0))}
                   </td>
-                  <td class="px-4 py-2.5 text-right">
+                  <td class="px-2 py-2.5 text-right sm:px-3">
                     <Badge size="sm" tone={statusTone(req.status)}>{req.status || '—'}</Badge>
                   </td>
                 </tr>

@@ -172,7 +172,7 @@ func TestCompressMessages_ToolRoleLong(t *testing.T) {
 }
 
 func TestCompressMessages_ToolResultShort(t *testing.T) {
-	in := []byte(`{"messages":[{"content":[{"type":"tool_result","text":"short"}]}]}`)
+	in := []byte(`{"messages":[{"content":[{"type":"tool_result","content":"short"}]}]}`)
 	out, ok := CompressMessages(in)
 	if ok {
 		t.Error("expected false for short tool_result")
@@ -188,7 +188,7 @@ func TestCompressMessages_ToolResultLong(t *testing.T) {
 		"messages": []any{
 			map[string]any{
 				"content": []any{
-					map[string]any{"type": "tool_result", "text": diff},
+					map[string]any{"type": "tool_result", "content": diff},
 				},
 			},
 		},
@@ -201,15 +201,18 @@ func TestCompressMessages_ToolResultLong(t *testing.T) {
 	var res map[string]any
 	json.Unmarshal(out, &res)
 	arr := res["messages"].([]any)[0].(map[string]any)["content"].([]any)
-	val := arr[0].(map[string]any)["text"].(string)
+	val := arr[0].(map[string]any)["content"].(string)
 	assertContains(t, val, "... (")
 }
 
-func TestCompressMessages_TextBlockLong(t *testing.T) {
+// Plain conversation text is not tool output, so RTK leaves it alone; a
+// tool-role array content is tool output and is compressed.
+func TestCompressMessages_ToolRoleArrayContent(t *testing.T) {
 	diff := longGitDiff()
 	msg := map[string]any{
 		"messages": []any{
 			map[string]any{
+				"role": "tool",
 				"content": []any{
 					map[string]any{"type": "text", "text": diff},
 				},
@@ -219,7 +222,7 @@ func TestCompressMessages_TextBlockLong(t *testing.T) {
 	in, _ := json.Marshal(msg)
 	out, ok := CompressMessages(in)
 	if !ok {
-		t.Fatal("expected true for long text block")
+		t.Fatal("expected true for a tool-role array content")
 	}
 	var res map[string]any
 	json.Unmarshal(out, &res)
@@ -307,7 +310,7 @@ func TestCompressMessages_InputOnlyMessagesFallback(t *testing.T) {
 		"input": []any{
 			map[string]any{
 				"content": []any{
-					map[string]any{"type": "tool_result", "text": diff},
+					map[string]any{"type": "tool_result", "content": diff},
 				},
 			},
 		},
@@ -320,7 +323,7 @@ func TestCompressMessages_InputOnlyMessagesFallback(t *testing.T) {
 	var res map[string]any
 	json.Unmarshal(out, &res)
 	arr := res["input"].([]any)[0].(map[string]any)["content"].([]any)
-	val := arr[0].(map[string]any)["text"].(string)
+	val := arr[0].(map[string]any)["content"].(string)
 	assertContains(t, val, "... (")
 }
 
