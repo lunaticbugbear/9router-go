@@ -1,21 +1,36 @@
 <script lang="ts">
   import { api } from '../api/client'
   import ChangelogModal from './ChangelogModal.svelte'
+  import CommandPalette, { type PaletteAction, type PaletteProvider } from './CommandPalette.svelte'
   import { type ActiveTab } from '../lib/router'
+  import { notifications } from '../lib/notifications'
+  import Button from '../lib/ui/Button.svelte'
+  import Icon from '../lib/ui/Icon.svelte'
+  import Modal from '../lib/ui/Modal.svelte'
 
   let {
     activeTab = 'endpoint',
+    sectionLabel = 'Dashboard',
     pageTitle,
     pageDescription,
     selectedProvider = null,
+    menuOpen = false,
+    providers = [],
+    navigate,
+    onSelectProvider,
     onBackToProviders,
     onMenuClick,
     onLogout,
   }: {
     activeTab?: ActiveTab
+    sectionLabel?: string
     pageTitle?: string
     pageDescription?: string
     selectedProvider?: { id: string; name: string; icon: string } | null
+    menuOpen?: boolean
+    providers?: PaletteProvider[]
+    navigate?: (tab: ActiveTab) => void
+    onSelectProvider?: (id: string) => void
     onBackToProviders?: () => void
     onMenuClick?: () => void
     onLogout?: () => void
@@ -24,9 +39,14 @@
   // Theme state
   let isDark = $state(true)
   let isDonateOpen = $state(false)
-  let isAppDrawerOpen = $state(false)
-  let isLangMenuOpen = $state(false)
+  let isAccountOpen = $state(false)
   let isChangelogOpen = $state(false)
+  let isPaletteOpen = $state(false)
+  let accountMenuEl = $state<HTMLDivElement | null>(null)
+  let accountButtonEl = $state<HTMLButtonElement | null>(null)
+
+  const modKey =
+    typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.userAgent) ? '⌘' : 'Ctrl'
 
   $effect(() => {
     if (typeof window !== 'undefined') {
@@ -54,8 +74,36 @@
     applyTheme(isDark)
   }
 
+  function closeAccountMenu(restoreFocus = false) {
+    if (!isAccountOpen) return
+    isAccountOpen = false
+    if (restoreFocus) accountButtonEl?.focus()
+  }
+
+  function handleWindowKeydown(event: KeyboardEvent) {
+    if ((event.metaKey || event.ctrlKey) && !event.altKey && event.key.toLowerCase() === 'k') {
+      // Don't stack the palette on top of another dialog's focus trap.
+      if (!isPaletteOpen && document.querySelector('[data-modal-open="true"]')) return
+      event.preventDefault()
+      closeAccountMenu()
+      isPaletteOpen = !isPaletteOpen
+      return
+    }
+    if (event.key !== 'Escape' || !isAccountOpen) return
+    // The shell's drawer handler also listens on `window` and cannot be
+    // cancelled from here; it skips instead when it sees `data-popover-open`.
+    closeAccountMenu(true)
+  }
+
+  function handleWindowPointerDown(event: MouseEvent) {
+    if (!isAccountOpen) return
+    const target = event.target
+    if (target instanceof Node && accountMenuEl?.contains(target)) return
+    closeAccountMenu()
+  }
+
   async function handleLogout() {
-    isAppDrawerOpen = false
+    closeAccountMenu()
     try {
       await api.logout()
     } catch {}
@@ -66,291 +114,219 @@
     }
   }
 
-  // Dynamic route meta matching upstream layout
-  interface RouteMeta {
-    title: string
-    description: string
-    icon: string
-  }
-
-  const routeMetaMap: Record<string, RouteMeta> = {
-    endpoint: {
-      title: 'Endpoint',
-      description: 'API endpoint configuration',
-      icon: 'api',
-    },
-    keys: {
-      title: 'CLI Tools',
-      description: 'Configure CLI tools',
-      icon: 'terminal',
-    },
-    connections: {
-      title: 'Providers',
-      description: 'Manage your AI provider connections',
-      icon: 'dns',
-    },
-    combos: {
-      title: 'Combos',
-      description: 'Model combos with fallback',
-      icon: 'layers',
-    },
-    analytics: {
-      title: 'Usage & Analytics',
-      description: 'Monitor your API usage, token consumption, and request logs',
-      icon: 'bar_chart',
-    },
-    quota: {
-      title: 'Quota Tracker',
-      description: 'Track and manage your API quota limits',
-      icon: 'data_usage',
-    },
-    'token-saver': {
-      title: 'Token Saver',
-      description: 'Compress prompts and outputs to save tokens',
-      icon: 'savings',
-    },
-    'cli-tools': {
-      title: 'CLI Tools',
-      description: 'Configure CLI tools',
-      icon: 'terminal',
-    },
-    'media-embedding': {
-      title: 'Embedding',
-      description: 'Manage your Embedding providers',
-      icon: 'data_array',
-    },
-    'media-image': {
-      title: 'Text to Image',
-      description: 'Manage your Text to Image providers',
-      icon: 'brush',
-    },
-    'media-tts': {
-      title: 'Text To Speech',
-      description: 'Manage your Text To Speech providers',
-      icon: 'record_voice_over',
-    },
-    'media-stt': {
-      title: 'Speech To Text',
-      description: 'Manage your Speech To Text providers',
-      icon: 'mic',
-    },
-    'media-video': {
-      title: 'Video',
-      description: 'Manage your Video providers',
-      icon: 'movie',
-    },
-    'media-web': {
-      title: 'Web Fetch & Search',
-      description: 'Configure web search and scrape tools',
-      icon: 'travel_explore',
-    },
-    'proxy-pools': {
-      title: 'Proxy Pools',
-      description: 'Manage your proxy pool configurations',
-      icon: 'lan',
-    },
-    skills: {
-      title: 'Agent Skills',
-      description: 'Copy a link and paste to your AI to use 9router-go — no install needed',
-      icon: 'extension',
-    },
-    'console-log': {
-      title: 'Console Log',
-      description: 'Live server console output',
-      icon: 'terminal',
-    },
-    terminal: {
-      title: 'Console Log',
-      description: 'Live server console output',
-      icon: 'terminal',
-    },
-    settings: {
-      title: 'Settings',
-      description: 'Manage your preferences',
-      icon: 'settings',
-    },
-    login: {
-      title: 'Login',
-      description: 'Authentication',
-      icon: 'lock',
-    },
-  }
-
-  let currentMeta = $derived(
-    routeMetaMap[activeTab] || {
-      title: pageTitle || 'Dashboard',
-      description: pageDescription || '',
-      icon: 'hub',
+  async function copyEndpoint() {
+    const url = `${window.location.origin}/v1`
+    try {
+      await navigator.clipboard.writeText(url)
+      notifications.success(url, 'Endpoint copied')
+    } catch {
+      notifications.error('Clipboard access was denied by the browser.', 'Copy failed')
     }
-  )
+  }
 
-  let displayTitle = $derived(pageTitle || currentMeta.title)
-  let displayDescription = $derived(
-    pageDescription !== undefined ? pageDescription : currentMeta.description
-  )
+  let paletteActions = $derived<PaletteAction[]>([
+    { id: 'copy-endpoint', label: 'Copy endpoint URL', icon: 'content_copy', hint: '/v1', run: copyEndpoint },
+    {
+      id: 'theme',
+      label: isDark ? 'Switch to Parchment theme' : 'Switch to Obsidian theme',
+      icon: isDark ? 'light_mode' : 'dark_mode',
+      run: toggleTheme,
+    },
+    { id: 'changelog', label: 'Release notes', icon: 'history', run: () => (isChangelogOpen = true) },
+    { id: 'logout', label: 'Sign out', icon: 'logout', run: handleLogout },
+  ])
 </script>
 
+<svelte:window onkeydown={handleWindowKeydown} onpointerdown={handleWindowPointerDown} />
+
 <header
-  class="h-16 bg-vibrancy backdrop-blur-xl border-b border-border-subtle px-4 lg:px-8 flex items-center justify-between gap-4 flex-shrink-0 z-20 transition-colors"
+  class="z-20 flex h-14 flex-shrink-0 items-center justify-between gap-3 border-b border-border-subtle bg-vibrancy px-4 sm:gap-4 lg:px-10"
 >
-  <!-- Left: Mobile menu toggle + Dynamic Title & Description -->
-  <div class="flex items-center gap-3 min-w-0 flex-1">
+  <!-- Left: mobile drawer trigger + destination context (views own the page heading) -->
+  <div class="flex min-w-0 flex-1 items-center gap-3">
     {#if onMenuClick}
       <button
+        id="app-menu-trigger"
         type="button"
         onclick={onMenuClick}
-        class="lg:hidden p-1.5 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-        aria-label="Toggle menu"
+        class="flex size-9 flex-shrink-0 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main lg:hidden"
+        aria-label={menuOpen ? 'Close navigation' : 'Open navigation'}
+        aria-expanded={menuOpen}
+        aria-controls="app-sidebar"
       >
-        <span class="material-symbols-outlined text-[22px]">menu</span>
+        <Icon name={menuOpen ? 'close' : 'menu'} size={22} />
       </button>
     {/if}
 
-    {#if activeTab === 'connections' && selectedProvider}
-      <div class="flex items-center gap-2 min-w-0">
-        <div class="flex items-center gap-2">
-          <button
-            type="button"
-            onclick={onBackToProviders}
-            class="text-text-muted hover:text-primary transition-colors cursor-pointer text-sm font-normal"
-          >
-            Providers
-          </button>
-        </div>
-        <div class="flex items-center gap-2 min-w-0">
-          <span class="material-symbols-outlined text-text-muted text-base">chevron_right</span>
-          <div class="flex items-center gap-2 min-w-0">
-            <img src={selectedProvider.icon} alt={selectedProvider.name} class="size-5 rounded object-contain" />
-            <h1 class="text-base lg:text-2xl font-semibold text-text-main tracking-tight truncate">
-              {selectedProvider.name}
-            </h1>
-          </div>
-        </div>
-      </div>
-    {:else}
-      <div class="flex items-center gap-2.5 min-w-0">
-        <span class="material-symbols-outlined text-primary text-xl lg:text-2xl flex-shrink-0">
-          {currentMeta.icon}
-        </span>
-        <div class="min-w-0">
-          <h1 class="text-base lg:text-lg font-semibold text-text-main truncate leading-tight tracking-tight">
-            {displayTitle}
-          </h1>
-          {#if displayDescription}
-            <p class="hidden sm:block text-xs text-text-muted truncate leading-tight mt-0.5">
-              {displayDescription}
-            </p>
-          {/if}
-        </div>
-      </div>
-    {/if}
+    <nav aria-label="Breadcrumb" class="min-w-0">
+      {#if activeTab === 'connections' && selectedProvider}
+        <ol class="flex min-w-0 items-center gap-1.5">
+          <li class="hidden flex-shrink-0 sm:block">
+            <span class="ui-kicker">{sectionLabel}</span>
+          </li>
+          <li aria-hidden="true" class="hidden flex-shrink-0 sm:block">
+            <Icon name="chevron-right" size={16} class="text-text-subtle" />
+          </li>
+          <li class="flex-shrink-0">
+            <button
+              type="button"
+              onclick={onBackToProviders}
+              class="cursor-pointer rounded-brand px-1 py-0.5 text-[13px] text-text-muted transition-colors hover:text-text-main"
+            >
+              Providers
+            </button>
+          </li>
+          <li aria-hidden="true" class="flex-shrink-0">
+            <Icon name="chevron-right" size={16} class="text-text-subtle" />
+          </li>
+          <li class="flex min-w-0 items-center gap-2">
+            <img
+              src={selectedProvider.icon}
+              alt=""
+              class="size-5 flex-shrink-0 rounded-brand object-contain"
+            />
+            <span class="truncate text-sm font-medium text-text-main">{selectedProvider.name}</span>
+          </li>
+        </ol>
+      {:else}
+        <!-- Location breadcrumb only. The destination's own view renders the
+             page heading, so repeating it here would duplicate the title. -->
+        <ol class="flex min-w-0 items-center gap-1.5">
+          <li class="flex-shrink-0">
+            <span class="ui-kicker">{sectionLabel}</span>
+          </li>
+          <li aria-hidden="true" class="flex-shrink-0">
+            <Icon name="chevron-right" size={16} class="text-text-subtle" />
+          </li>
+          <li class="min-w-0">
+            <span
+              class="block truncate text-[13px] text-text-muted"
+              title={pageDescription || pageTitle || 'Dashboard'}
+            >
+              {pageTitle || 'Dashboard'}
+            </span>
+          </li>
+        </ol>
+      {/if}
+    </nav>
   </div>
 
-  <!-- Right action buttons: Donate, Theme, Language flag, App drawer -->
-  <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
-    <!-- 1. Donate button -->
+  <!-- Right: command palette, theme, changelog, account -->
+  <div class="flex flex-shrink-0 items-center gap-1">
     <button
       type="button"
-      onclick={() => (isDonateOpen = true)}
-      class="flex items-center gap-1.5 px-3 h-8 rounded-lg border border-pink-500/30 bg-pink-500/10 text-pink-600 dark:text-pink-400 hover:bg-pink-500/20 transition-colors text-xs sm:text-sm font-medium cursor-pointer"
-      aria-label="Donate"
+      onclick={() => (isPaletteOpen = true)}
+      class="mr-2 hidden h-8 cursor-pointer items-center gap-2 rounded-brand border border-border-subtle bg-input pl-2.5 pr-1.5 font-code text-[12px] text-text-subtle transition-colors duration-150 ease-imperial hover:border-brass/50 hover:text-text-muted md:flex"
+      aria-label="Open command palette"
+      aria-keyshortcuts="Meta+K Control+K"
     >
-      <span class="material-symbols-outlined text-[18px]">volunteer_activism</span>
-      <span class="hidden sm:inline">Donate</span>
+      <span class="text-focus" aria-hidden="true">›</span>
+      <span class="w-32 text-left lg:w-44">Jump to…</span>
+      <kbd class="rounded-brand border border-border-subtle bg-surface-2 px-1.5 py-px text-[10px]">
+        {modKey} K
+      </kbd>
+    </button>
+    <button
+      type="button"
+      onclick={() => (isPaletteOpen = true)}
+      class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main md:hidden"
+      aria-label="Open command palette"
+    >
+      <Icon name="search" size={20} />
     </button>
 
-    <!-- 2. Light/Dark theme toggle -->
     <button
       type="button"
       onclick={toggleTheme}
-      class="flex items-center justify-center size-8 rounded-lg text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5 transition-all cursor-pointer"
-      title={isDark ? 'Switch to light mode' : 'Switch to dark mode'}
-      aria-label="Toggle theme"
+      class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main"
+      title={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
+      aria-label={isDark ? 'Switch to light theme' : 'Switch to dark theme'}
     >
-      <span class="material-symbols-outlined text-[20px]">
-        {isDark ? 'light_mode' : 'dark_mode'}
-      </span>
+      <Icon name={isDark ? 'sun' : 'moon'} size={20} />
     </button>
 
-    <!-- 3. Language flag button -->
-    <div class="relative">
+    <button
+      type="button"
+      onclick={() => (isChangelogOpen = true)}
+      class="flex h-9 cursor-pointer items-center gap-2 rounded-brand px-2 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main"
+      title="Release notes"
+    >
+      <Icon name="history" size={20} />
+      <span class="hidden text-[13px] xl:inline">Changelog</span>
+      <span class="sr-only xl:hidden">Changelog</span>
+    </button>
+
+    <div class="relative" bind:this={accountMenuEl}>
       <button
+        bind:this={accountButtonEl}
         type="button"
-        onclick={() => (isLangMenuOpen = !isLangMenuOpen)}
-        class="flex items-center justify-center size-8 rounded-lg text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5 transition-all cursor-pointer"
-        title="Language"
-        aria-label="Language selection"
+        onclick={() => (isAccountOpen = !isAccountOpen)}
+        class="flex size-9 cursor-pointer items-center justify-center rounded-brand border border-transparent text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main {isAccountOpen
+          ? 'border-border-subtle bg-surface-2 text-text-main'
+          : ''}"
+        aria-label="Account and session"
+        aria-haspopup="menu"
+        aria-expanded={isAccountOpen}
+        aria-controls="account-menu"
       >
-        <span class="text-base leading-none select-none">🇺🇸</span>
+        <Icon name="user" size={20} />
       </button>
 
-      {#if isLangMenuOpen}
+      {#if isAccountOpen}
         <div
-          class="absolute right-0 top-full mt-2 w-36 bg-surface border border-border-subtle rounded-xl shadow-2xl z-50 py-1"
+          id="account-menu"
+          role="menu"
+          aria-label="Account and session"
+          data-popover-open="true"
+          class="ui-panel absolute right-0 top-full z-50 mt-2 w-60 py-1.5 shadow-elevated"
         >
+          <div class="border-b border-border-subtle px-4 pb-2.5 pt-1.5">
+            <p class="font-code text-[10px] uppercase tracking-[0.16em] text-text-subtle">
+              Session
+            </p>
+            <p class="mt-0.5 text-[13px] text-text-main">Local gateway operator</p>
+          </div>
+
           <button
             type="button"
-            onclick={() => (isLangMenuOpen = false)}
-            class="flex items-center gap-2 w-full px-3 py-1.5 text-xs text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-          >
-            <span>🇺🇸</span>
-            <span>English</span>
-          </button>
-        </div>
-      {/if}
-    </div>
-
-    <!-- 4. App drawer launcher icon (grid_view) -->
-    <div class="relative">
-      <button
-        type="button"
-        onclick={() => (isAppDrawerOpen = !isAppDrawerOpen)}
-        class="flex items-center justify-center size-8 rounded-lg text-text-muted hover:text-text-main hover:bg-black/5 dark:hover:bg-white/5 transition-all cursor-pointer"
-        title="Menu"
-        aria-label="App drawer"
-      >
-        <span class="material-symbols-outlined text-[20px]">grid_view</span>
-      </button>
-
-      {#if isAppDrawerOpen}
-        <div
-          class="absolute right-0 top-full mt-2 w-56 bg-surface border border-border-subtle rounded-xl shadow-2xl z-50 py-1 animate-in fade-in zoom-in-95 duration-150"
-        >
-          <button
-            type="button"
+            role="menuitem"
             onclick={() => {
-              isAppDrawerOpen = false
-              toggleTheme()
-            }}
-            class="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-          >
-            <span class="material-symbols-outlined text-[20px] text-text-muted">
-              {isDark ? 'light_mode' : 'dark_mode'}
-            </span>
-            <span class="flex-1 text-left">Theme</span>
-          </button>
-
-          <button
-            type="button"
-            onclick={() => {
-              isAppDrawerOpen = false
+              closeAccountMenu()
               isChangelogOpen = true
             }}
-            class="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
+            class="flex w-full cursor-pointer items-center gap-3 px-4 py-2 text-[13px] text-text-main transition-colors hover:bg-surface-2"
           >
-            <span class="material-symbols-outlined text-[20px] text-text-muted">history</span>
-            <span class="flex-1 text-left">Change Log</span>
+            <span class="material-symbols-outlined text-[18px] text-text-subtle" aria-hidden="true">
+              history
+            </span>
+            <span class="flex-1 text-left">Release notes</span>
           </button>
-
-          <div class="h-px bg-border-subtle my-1"></div>
 
           <button
             type="button"
-            onclick={handleLogout}
-            class="flex items-center gap-3 w-full px-4 py-2.5 text-sm text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
+            role="menuitem"
+            onclick={() => {
+              closeAccountMenu()
+              isDonateOpen = true
+            }}
+            class="flex w-full cursor-pointer items-center gap-3 px-4 py-2 text-[13px] text-text-main transition-colors hover:bg-surface-2"
           >
-            <span class="material-symbols-outlined text-[20px] text-red-500">logout</span>
-            <span class="flex-1 text-left">Logout</span>
+            <span class="material-symbols-outlined text-[18px] text-text-subtle" aria-hidden="true">
+              volunteer_activism
+            </span>
+            <span class="flex-1 text-left">Support the project</span>
+          </button>
+
+          <div class="my-1 h-px bg-border-subtle"></div>
+
+          <button
+            type="button"
+            role="menuitem"
+            onclick={handleLogout}
+            class="flex w-full cursor-pointer items-center gap-3 px-4 py-2 text-[13px] text-danger transition-colors hover:bg-danger/10"
+          >
+            <span class="material-symbols-outlined text-[18px]" aria-hidden="true">logout</span>
+            <span class="flex-1 text-left">Sign out</span>
           </button>
         </div>
       {/if}
@@ -358,88 +334,58 @@
   </div>
 </header>
 
-<!-- Donate Modal -->
-{#if isDonateOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <div
-      class="absolute inset-0 bg-black/40 backdrop-blur-sm"
-      onclick={() => (isDonateOpen = false)}
-      onkeydown={(e) => e.key === 'Escape' && (isDonateOpen = false)}
-      role="button"
-      tabindex="-1"
-      aria-label="Close background"
-    ></div>
+<Modal isOpen={isDonateOpen} onClose={() => (isDonateOpen = false)} title="Support 9router-go" size="lg">
+  <div class="flex flex-col gap-5">
+    <p class="text-sm leading-relaxed text-text-muted">
+      9router-go is a fast, lightweight, open-source high-throughput AI gateway in Go. If it saves
+      you time and tokens, consider supporting the project.
+    </p>
 
-    <div
-      class="relative w-full max-w-lg bg-surface border border-border-subtle rounded-2xl shadow-2xl p-6 flex flex-col gap-5 z-10 animate-in fade-in zoom-in-95"
-    >
-      <div class="flex items-center justify-between pb-3 border-b border-border-subtle">
-        <h2 class="text-lg font-semibold text-text-main flex items-center gap-2">
-          <span class="material-symbols-outlined text-pink-500">volunteer_activism</span>
-          Support 9router-go
-        </h2>
-        <button
-          type="button"
-          onclick={() => (isDonateOpen = false)}
-          class="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-          aria-label="Close"
-        >
-          <span class="material-symbols-outlined text-[20px]">close</span>
-        </button>
-      </div>
+    <div class="grid grid-cols-1 gap-3 sm:grid-cols-2">
+      <a
+        href="https://github.com/luqman-v1/9router-go"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="flex items-center gap-3 rounded-brand border border-border-subtle bg-surface-2 p-3.5 transition-colors duration-150 ease-imperial hover:border-brass/50"
+      >
+        <span class="flex size-10 items-center justify-center rounded-brand border border-primary/30 bg-primary/10 text-primary">
+          <span class="material-symbols-outlined text-[22px]" aria-hidden="true">star</span>
+        </span>
+        <span class="min-w-0">
+          <span class="block text-sm font-semibold text-text-main">GitHub repository</span>
+          <span class="block text-xs text-text-muted">Star and contribute</span>
+        </span>
+      </a>
 
-      <p class="text-sm text-text-muted leading-relaxed">
-        9router-go is a fast, lightweight and open-source high-throughput AI gateway in Go. If 9router-go saves you time and tokens, consider supporting the project!
-      </p>
-
-      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        <a
-          href="https://github.com/luqman-v1/9router-go"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="flex items-center gap-3 p-3.5 rounded-xl border border-border-subtle bg-surface-2 hover:border-brand-500/40 transition-all group"
-        >
-          <div class="size-10 rounded-full flex items-center justify-center bg-brand-500/10 text-brand-500">
-            <span class="material-symbols-outlined text-[22px]">star</span>
-          </div>
-          <div class="min-w-0">
-            <div class="text-sm font-semibold text-text-main group-hover:text-brand-500 transition-colors">
-              GitHub Repository
-            </div>
-            <div class="text-xs text-text-muted">Star & contribute on GitHub</div>
-          </div>
-        </a>
-
-        <a
-          href="https://github.com/luqman-v1/9router-go/releases"
-          target="_blank"
-          rel="noopener noreferrer"
-          class="flex items-center gap-3 p-3.5 rounded-xl border border-border-subtle bg-surface-2 hover:border-pink-500/40 transition-all group"
-        >
-          <div class="size-10 rounded-full flex items-center justify-center bg-pink-500/10 text-pink-500">
-            <span class="material-symbols-outlined text-[22px]">rocket_launch</span>
-          </div>
-          <div class="min-w-0">
-            <div class="text-sm font-semibold text-text-main group-hover:text-pink-500 transition-colors">
-              Releases & Updates
-            </div>
-            <div class="text-xs text-text-muted">Latest releases & changelog</div>
-          </div>
-        </a>
-      </div>
-
-      <div class="flex justify-end pt-2">
-        <button
-          type="button"
-          onclick={() => (isDonateOpen = false)}
-          class="px-4 py-2 text-sm rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-medium transition-colors cursor-pointer"
-        >
-          Close
-        </button>
-      </div>
+      <a
+        href="https://github.com/luqman-v1/9router-go/releases"
+        target="_blank"
+        rel="noopener noreferrer"
+        class="flex items-center gap-3 rounded-brand border border-border-subtle bg-surface-2 p-3.5 transition-colors duration-150 ease-imperial hover:border-brass/50"
+      >
+        <span class="flex size-10 items-center justify-center rounded-brand border border-info/30 bg-info/10 text-info">
+          <span class="material-symbols-outlined text-[22px]" aria-hidden="true">rocket_launch</span>
+        </span>
+        <span class="min-w-0">
+          <span class="block text-sm font-semibold text-text-main">Releases and updates</span>
+          <span class="block text-xs text-text-muted">Latest builds and notes</span>
+        </span>
+      </a>
     </div>
   </div>
-{/if}
+
+  {#snippet footer()}
+    <Button variant="secondary" onclick={() => (isDonateOpen = false)}>Close</Button>
+  {/snippet}
+</Modal>
+
+<CommandPalette
+  bind:open={isPaletteOpen}
+  {navigate}
+  {providers}
+  {onSelectProvider}
+  actions={paletteActions}
+/>
 
 <!-- Change Log Modal -->
 <ChangelogModal isOpen={isChangelogOpen} onClose={() => (isChangelogOpen = false)} />

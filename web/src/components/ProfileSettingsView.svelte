@@ -69,6 +69,7 @@
   // Save states
   let isSavingSettings = $state(false)
   let saveSuccess = $state(false)
+  let saveError = $state('')
 
   // Database Backup / Import
   let isDownloadingBackup = $state(false)
@@ -134,6 +135,7 @@
   async function handleSaveAll() {
     isSavingSettings = true
     saveSuccess = false
+    saveError = ''
     try {
       await api.updateSettings({
         requireLogin,
@@ -157,7 +159,7 @@
       onRefresh?.()
       setTimeout(() => (saveSuccess = false), 3000)
     } catch (err) {
-      alert(`Failed to save settings: ${err instanceof Error ? err.message : String(err)}`)
+      saveError = err instanceof Error ? err.message : String(err)
     } finally {
       isSavingSettings = false
     }
@@ -278,6 +280,12 @@
     </button>
   </div>
 
+  {#if saveError}
+    <div class="rounded-brand border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger" role="alert">
+      Settings were not saved — {saveError}
+    </div>
+  {/if}
+
   <div class="grid grid-cols-1 lg:grid-cols-2 gap-5">
     <!-- SECTION 1: Local Machine Mode & Database -->
     <Card padding="md" class="space-y-4">
@@ -300,7 +308,7 @@
             ~/.9router/db/data.sqlite
           </div>
           <div class="text-[11px] text-text-muted pt-1">
-            SQLite WAL Mode • SetMaxOpenConns(4) • Automatic schema migration
+            SQLite WAL mode • Schema setup: 9router init-db
           </div>
         </div>
 
@@ -385,7 +393,13 @@
         <div class="flex items-center justify-between">
           <div>
             <p class="font-semibold text-text-main">Require Password on Localhost</p>
-            <p class="text-[11px] text-text-subtle">Default password is <code class="font-mono text-brand-500">Mantep210</code></p>
+            {#if settings.usesDefaultPassword}
+              <p class="text-[11px] text-warning">Default password <code class="font-mono">123456</code> is in use.</p>
+            {:else if settings.hasPassword}
+              <p class="text-[11px] text-success">A custom password is configured.</p>
+            {:else}
+              <p class="text-[11px] text-text-subtle">No password is configured; set INITIAL_PASSWORD before exposing the dashboard.</p>
+            {/if}
           </div>
         </div>
 
@@ -433,7 +447,7 @@
                   id="curr-pwd"
                   type="password"
                   bind:value={currentPassword}
-                  placeholder="Mantep210"
+                  placeholder="Enter current password"
                   class="w-full px-3 py-1.5 rounded-lg bg-bg border border-border text-xs font-mono text-text-main focus:outline-none focus:border-brand-500"
                   required
                 />

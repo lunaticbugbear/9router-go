@@ -1,5 +1,6 @@
 export type ActiveTab =
   | 'login'
+  | 'overview'
   | 'endpoint'
   | 'connections'
   | 'combos'
@@ -26,6 +27,7 @@ export type ActiveTab =
 
 export const TAB_ROUTES: Record<ActiveTab, string> = {
   login: '/login',
+  overview: '/dashboard/overview',
   endpoint: '/dashboard/endpoint',
   connections: '/dashboard/providers',
   combos: '/dashboard/combos',
@@ -55,9 +57,13 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
   // login
   '/login': 'login',
 
+  // overview (landing)
+  '/': 'overview',
+  '/dashboard': 'overview',
+  '/dashboard/overview': 'overview',
+  '/overview': 'overview',
+
   // endpoint
-  '/': 'endpoint',
-  '/dashboard': 'endpoint',
   '/dashboard/endpoint': 'endpoint',
   '/endpoint': 'endpoint',
 
@@ -155,13 +161,14 @@ const ROUTE_TO_TAB: Record<string, ActiveTab> = {
 }
 
 export function pathToTab(pathname: string): ActiveTab {
-  if (!pathname) return 'endpoint'
+  if (!pathname) return 'overview'
   const clean = pathname.trim().split('?')[0].split('#')[0]
   const normalized = (clean.replace(/\/+$/, '') || '/').toLowerCase()
   if (ROUTE_TO_TAB[normalized]) {
     return ROUTE_TO_TAB[normalized]
   }
   if (normalized.includes('login')) return 'login'
+  if (normalized.includes('overview')) return 'overview'
   if (normalized.includes('endpoint')) return 'endpoint'
   if (normalized.includes('embedding')) return 'media-embedding'
   if (normalized.includes('image')) return 'media-image'
@@ -189,7 +196,7 @@ export function pathToTab(pathname: string): ActiveTab {
   if (normalized.includes('personas')) return 'personas'
   if (normalized.includes('feature-flags')) return 'feature-flags'
   if (normalized.includes('profile') || normalized.includes('settings')) return 'settings'
-  return 'endpoint'
+  return 'overview'
 }
 
 export function parseProviderId(pathname: string): string | null {

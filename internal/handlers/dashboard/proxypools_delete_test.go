@@ -8,6 +8,29 @@ import (
 	"testing"
 )
 
+func TestGetProxyPools_EmptyList(t *testing.T) {
+	repo, cleanup := setupTestDB(t)
+	defer cleanup()
+
+	router := setupTestRouter(repo)
+	req := httptest.NewRequest(http.MethodGet, "/api/proxy-pools?includeUsage=true", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET proxy pools expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		ProxyPools []map[string]any `json:"proxyPools"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode proxy pool response: %v", err)
+	}
+	if len(response.ProxyPools) != 0 {
+		t.Fatalf("expected empty proxy pool list, got %d entries", len(response.ProxyPools))
+	}
+}
+
 // Upstream parity: deleting a pool with bound connections must fail with 409
 // and report boundConnectionCount; unbound pools delete with 200.
 func TestDeleteProxyPoolBoundConflict(t *testing.T) {

@@ -122,25 +122,27 @@ func (h *DashboardHandler) HandleAuthStatus(w http.ResponseWriter, r *http.Reque
 			displayName = firstNonEmptyStr(claims.OidcName, claims.OidcEmail, "OIDC user")
 		}
 	}
+	hasPassword, usesDefaultPassword := dashboardPasswordStatus(raw)
 	noStore(w)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-		"requireLogin":   auth.RequireLogin(h.Repo),
-		"authMode":       stringOr(raw, "authMode", "password"),
-		"ssoType":        stringOr(raw, "ssoType", "oidc"),
-		"oidcConfigured": oidcConfigured(raw),
-		"oidcLoginLabel": loginLabel(raw, "oidcLoginLabel", "Sign in with OIDC"),
-		"samlConfigured": samlConfigured(raw),
-		"samlLoginLabel": loginLabel(raw, "samlLoginLabel", "Sign in with SAML SSO"),
-		"hasPassword":    hasStoredPassword(raw),
-		"displayName":    displayName,
-		"loginMethod":    loginMethod,
-		"authenticated":  claims != nil,
-		"oidcName":       oidcName,
-		"oidcEmail":      oidcEmail,
-		"oidcLogin":      oidcLogin,
-		"samlName":       samlName,
-		"samlEmail":      samlEmail,
-		"samlLogin":      samlLogin,
+		"requireLogin":        auth.RequireLogin(h.Repo),
+		"authMode":            stringOr(raw, "authMode", "password"),
+		"ssoType":             stringOr(raw, "ssoType", "oidc"),
+		"oidcConfigured":      oidcConfigured(raw),
+		"oidcLoginLabel":      loginLabel(raw, "oidcLoginLabel", "Sign in with OIDC"),
+		"samlConfigured":      samlConfigured(raw),
+		"samlLoginLabel":      loginLabel(raw, "samlLoginLabel", "Sign in with SAML SSO"),
+		"hasPassword":         hasPassword,
+		"usesDefaultPassword": usesDefaultPassword,
+		"displayName":         displayName,
+		"loginMethod":         loginMethod,
+		"authenticated":       claims != nil,
+		"oidcName":            oidcName,
+		"oidcEmail":           oidcEmail,
+		"oidcLogin":           oidcLogin,
+		"samlName":            samlName,
+		"samlEmail":           samlEmail,
+		"samlLogin":           samlLogin,
 	})
 }
 
@@ -153,6 +155,7 @@ func (h *DashboardHandler) HandleRequireLogin(w http.ResponseWriter, r *http.Req
 	if v, ok := raw["tunnelDashboardAccess"].(bool); ok {
 		tunnelAccess = v
 	}
+	hasPassword, usesDefaultPassword := dashboardPasswordStatus(raw)
 	noStore(w)
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"requireLogin":          auth.RequireLogin(h.Repo),
@@ -160,6 +163,8 @@ func (h *DashboardHandler) HandleRequireLogin(w http.ResponseWriter, r *http.Req
 		"tunnelUrl":             stringOr(raw, "tunnelUrl", ""),
 		"tailscaleUrl":          stringOr(raw, "tailscaleUrl", ""),
 		"authenticated":         auth.SessionValid(r),
+		"hasPassword":           hasPassword,
+		"usesDefaultPassword":   usesDefaultPassword,
 	})
 }
 
@@ -176,6 +181,11 @@ func settingsOrEmpty(h *DashboardHandler) map[string]any {
 func hasStoredPassword(raw map[string]any) bool {
 	hash, _ := raw["password"].(string)
 	return hash != ""
+}
+
+func dashboardPasswordStatus(raw map[string]any) (hasPassword, usesDefaultPassword bool) {
+	hasPassword = hasStoredPassword(raw) || config.LoadConfig().InitialPassword != ""
+	return hasPassword, !hasPassword
 }
 
 func stringOr(m map[string]any, key, fallback string) string {
@@ -264,9 +274,8 @@ func loginLabel(raw map[string]any, key, fallback string) string {
 // well-known default password on a non-local connection forces a rotation
 // before any session cookie is issued.
 func mustChangeDefaultPassword(r *http.Request, raw map[string]any) bool {
-	return !hasStoredPassword(raw) &&
-		config.LoadConfig().InitialPassword == "" &&
-		!nodeRequestIsLocal(r)
+	_, usesDefaultPassword := dashboardPasswordStatus(raw)
+	return usesDefaultPassword && !nodeRequestIsLocal(r)
 }
 
 // strPtr maps an empty identity claim to JSON null (upstream status shape).

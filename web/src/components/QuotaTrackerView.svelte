@@ -7,6 +7,7 @@
   // and per-connection refresh/toggle/delete actions.
   import { onMount } from 'svelte'
   import { api, type ProviderConnection } from '../api/client'
+  import { notifications } from '../lib/notifications'
   import { PROVIDER_CATALOG } from '../lib/providers'
   import Toggle from '../lib/ui/Toggle.svelte'
   import { getIconPath } from './connections/types'
@@ -62,6 +63,7 @@
   let refreshingAll = $state(false)
   let countdown = $state(60)
   let connectionsLoading = $state(true)
+  let connectionsError = $state('')
   let deletingId = $state<string | null>(null)
   let togglingId = $state<string | null>(null)
   let bulkToggling = $state(false)
@@ -92,6 +94,8 @@
     claude: {},
     codex: {},
   })
+  let autoPingSaving = $state<Record<string, boolean>>({})
+  let autoPingErrors = $state<Record<string, string>>({})
 
   // Edit modal state
   let editingConnection = $state<ProviderConnection | null>(null)
@@ -119,6 +123,7 @@
     api_key: 'API Key',
   }
 
+  connectionsError = ''
   const AUTO_PING_SETTINGS_KEYS: Record<string, string> = {
     claude: 'claudeAutoPing',
     codex: 'codexAutoPing',
@@ -161,19 +166,38 @@
 
   async function toggleAutoPing(connId: string, provider: string, enabled: boolean) {
     const key = AUTO_PING_SETTINGS_KEYS[provider]
-    if (!key) return
-    const currentMap = autoPingMaps[provider as 'claude' | 'codex'] || {}
+    if (!key || autoPingSaving[provider]) return
+    const providerKey = provider as 'claude' | 'codex'
+    const currentMap = autoPingMaps[providerKey] || {}
     const nextMap = { ...currentMap, [connId]: enabled }
     autoPingMaps = {
       ...autoPingMaps,
       [provider]: nextMap,
     }
+    autoPingSaving = { ...autoPingSaving, [provider]: true }
+    autoPingErrors = { ...autoPingErrors, [connId]: '' }
     try {
-      await api.updateSettingsRaw({
+      await api.patchSettings({
         [key]: nextMap,
       })
     } catch (err) {
+      const latestMap = autoPingMaps[providerKey] || {}
+      if (latestMap[connId] === enabled) {
+        const restoredMap = { ...latestMap }
+        if (Object.prototype.hasOwnProperty.call(currentMap, connId)) {
+          restoredMap[connId] = currentMap[connId]
+        } else {
+          delete restoredMap[connId]
+        }
+        autoPingMaps = { ...autoPingMaps, [provider]: restoredMap }
+      }
+      autoPingErrors = {
+        ...autoPingErrors,
+        [connId]: err instanceof Error ? err.message : String(err),
+      }
       console.error('Failed to update autoPing:', err)
+    } finally {
+      autoPingSaving = { ...autoPingSaving, [provider]: false }
     }
   }
 
@@ -275,6 +299,7 @@
       return connectionList
     } catch (error) {
       console.error('Error fetching connections:', error)
+      connectionsError = error instanceof Error ? error.message : String(error)
       connections = []
       providerOptions = []
       pagination = { page: 1, pageSize, total: 0, totalPages: 1 }
@@ -371,6 +396,7 @@
       await fetchConnections(page)
     } catch (error) {
       console.error('Error deleting connection:', error)
+      notifications.error(error instanceof Error ? error.message : 'Failed to delete connection')
     } finally {
       deletingId = null
     }
@@ -385,6 +411,7 @@
       )
     } catch (error) {
       console.error('Error updating connection status:', error)
+      notifications.error(error instanceof Error ? error.message : 'Failed to update connection status')
     } finally {
       togglingId = null
     }
@@ -394,7 +421,7 @@
     if (!targetIds.length || bulkToggling) return
     bulkToggling = true
     try {
-      await Promise.allSettled(
+      const results = await Promise.allSettled(
         targetIds.map((id) =>
           api.updateConnection(id, { isActive: nextActive ? 1 : 0 }).then(() => {
             connections = connections.map((c) =>
@@ -403,8 +430,17 @@
           }),
         ),
       )
+      const failedCount = results.filter((result) => result.status === 'rejected').length
+      if (failedCount > 0) {
+        notifications.error(
+          failedCount === targetIds.length
+            ? 'Could not update any selected connections.'
+            : `${failedCount} of ${targetIds.length} selected connections could not be updated.`,
+        )
+      }
     } catch (error) {
       console.error('Error bulk toggling connections:', error)
+      notifications.error(error instanceof Error ? error.message : 'Failed to update selected connections')
     } finally {
       bulkToggling = false
     }
@@ -848,7 +884,20 @@
   {/if}
 
   <!-- Empty states -->
-  {#if !connectionsLoading && !hasEligibleConnections}
+  {#if !connectionsLoading && connectionsError}
+    <div class="flex flex-col items-center gap-3 rounded-xl border border-danger/30 bg-danger/5 p-8 text-center" role="alert">
+      <p class="text-sm text-danger">Could not load quota connections — {connectionsError}</p>
+      <button
+        type="button"
+        onclick={() => refreshAll(true)}
+        disabled={refreshingAll}
+        class="flex h-8 items-center gap-1.5 rounded-lg border border-border-subtle bg-surface px-3 text-xs text-text-main transition-colors hover:bg-surface-2 disabled:opacity-50"
+      >
+        <span class="material-symbols-outlined text-[14px] {refreshingAll ? 'animate-spin' : ''}">refresh</span>
+        Retry
+      </button>
+    </div>
+  {:else if !connectionsLoading && !hasEligibleConnections}
     <div
       class="rounded-xl border border-border-subtle bg-surface p-12 text-center shadow-[var(--shadow-soft)]"
     >
@@ -970,15 +1019,27 @@
 
                 {#if (conn.provider === 'claude' || conn.provider === 'codex') && conn.authType === 'oauth'}
                   {@const isAutoPingActive = autoPingMaps[conn.provider]?.[conn.id] === true}
+                  {@const isAutoPingSaving = autoPingSaving[conn.provider] === true}
+                  {@const autoPingError = autoPingErrors[conn.id]}
                   <button
                     type="button"
                     onclick={() => toggleAutoPing(conn.id, conn.provider, !isAutoPingActive)}
-                    title={AUTO_PING_TOOLTIPS[conn.provider]}
-                    aria-label="Toggle auto-ping"
-                    class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
+                    disabled={isAutoPingSaving}
+                    title={autoPingError || AUTO_PING_TOOLTIPS[conn.provider]}
+                    aria-label="{isAutoPingActive ? 'Disable' : 'Enable'} auto-ping for {getConnectionLabel(conn) || providerLabel(conn.provider)}"
+                    aria-pressed={isAutoPingActive}
+                    class="flex h-8 w-8 items-center justify-center rounded-lg transition-colors hover:bg-surface-3 cursor-pointer disabled:cursor-wait disabled:opacity-50 {isAutoPingActive ? 'text-primary' : 'text-text-muted'}"
                   >
-                    <span class="material-symbols-outlined text-[18px]">bolt</span>
+                    <span class="material-symbols-outlined text-[18px] {isAutoPingSaving ? 'animate-spin' : ''}">{isAutoPingSaving ? 'progress_activity' : 'bolt'}</span>
                   </button>
+                  {#if autoPingError}
+                    <span
+                      class="material-symbols-outlined text-[16px] text-danger"
+                      role="status"
+                      aria-label="Auto-ping update failed"
+                      title={autoPingError}
+                    >error</span>
+                  {/if}
                 {/if}
 
                 <!-- Refresh quota -->
@@ -1033,6 +1094,7 @@
                     size="sm"
                     checked={isActive}
                     disabled={rowBusy}
+                    label={`${isActive ? 'Disable' : 'Enable'} ${getConnectionLabel(conn) || providerLabel(conn.provider)}`}
                     onChange={(nextActive) => handleToggleConnectionActive(conn.id, nextActive)}
                   />
                 </div>

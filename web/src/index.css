@@ -2,159 +2,195 @@
 
 @custom-variant dark (&:where(.dark, .dark *));
 
-/*
- * 9Router design tokens
- * Ported from decolua/9router `src/app/globals.css`:
- * warm paper light theme + charcoal dark theme, terracotta brand (#E56A4A),
- * frosted sidebar, 10/14px brand radii, soft/warm/elevated shadows.
- */
-
+/* "Imperial Dusk" — see DESIGN.md. Semantic names are stable; only values change. */
 @theme inline {
-  /* Brand scale (terracotta) */
-  --color-brand-50: #fdf1ed;
-  --color-brand-100: #fadccf;
-  --color-brand-200: #f4b59c;
-  --color-brand-300: #ee8d6a;
-  --color-brand-400: #ea7855;
-  --color-brand-500: #e56a4a;
-  --color-brand-600: #cc5236;
-  --color-brand-700: #a64027;
-  --color-brand-800: #7a2f1d;
-  --color-brand-900: #4d1e12;
-  --color-primary: #e56a4a;
-  --color-primary-hover: #cc5236;
-  --color-vibrancy: var(--app-sidebar);
+  --color-brand-50: #f8f1e5;
+  --color-brand-100: #eee0c9;
+  --color-brand-200: #dfc6a2;
+  --color-brand-300: #ccaa79;
+  --color-brand-400: #b98b58;
+  --color-brand-500: #93663f;
+  --color-brand-600: #7a5232;
+  --color-brand-700: #623f27;
+  --color-brand-800: #4b3222;
+  --color-brand-900: #302218;
+  --color-brand-950: #211911;
+  --color-primary: var(--app-primary);
+  --color-primary-hover: var(--app-primary-hover);
+  --color-vibrancy: var(--app-topbar);
 
-  /* Semantic surfaces */
   --color-bg: var(--app-bg);
   --color-bg-alt: var(--app-bg-alt);
+  --color-bg-subtle: var(--app-bg-alt);
   --color-surface: var(--app-surface);
   --color-surface-2: var(--app-surface-2);
   --color-surface-3: var(--app-surface-3);
   --color-sidebar: var(--app-sidebar);
-
-  /* Borders */
   --color-border: var(--app-border);
   --color-border-subtle: var(--app-border-subtle);
-
-  /* Text */
   --color-text-main: var(--app-text-main);
   --color-text-muted: var(--app-text-muted);
   --color-text-subtle: var(--app-text-subtle);
+  --color-brass: var(--app-brass);
+  --color-focus: var(--app-focus);
 
-  /* Status */
-  --color-danger: #cf222e;
-  --color-success: #10b981;
-  --color-warning: #f59e0b;
-  --color-info: #3b82f6;
+  --color-danger: var(--app-danger);
+  --color-error: var(--app-danger);
+  --color-success: var(--app-success);
+  --color-warning: var(--app-warning);
+  --color-info: var(--app-info);
 
-  /* Radii */
-  --radius-brand: 10px;
-  --radius-brand-lg: 14px;
+  --radius-brand: 3px;
+  --radius-brand-lg: 4px;
+  --shadow-soft: 0 1px 0 rgba(0, 0, 0, 0.18);
+  --shadow-warm: 0 0 0 1px color-mix(in srgb, var(--app-brass) 35%, transparent);
+  --shadow-elevated: 0 24px 64px rgba(2, 4, 6, 0.45);
+  /* Legacy alias still referenced by several hand-rolled modals. */
+  --shadow-elev: var(--shadow-elevated);
+  --shadow-signal: 0 0 0 1px var(--app-focus), 0 0 14px rgba(95, 212, 200, 0.22);
 
-  /* Shadows */
-  --shadow-soft: 0 1px 2px 0 rgba(0, 0, 0, 0.04);
-  --shadow-warm: 0 2px 12px -2px rgba(229, 106, 74, 0.18);
-  --shadow-elevated: 0 12px 28px -4px rgba(60, 50, 45, 0.06);
+  --ease-imperial: cubic-bezier(0.2, 0, 0, 1);
 
-  /* Fonts */
-  --font-headline: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Display",
-    system-ui, sans-serif;
-  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text",
-    system-ui, sans-serif;
+  --font-headline: "Cinzel", "Iowan Old Style", "Baskerville", "Palatino Linotype", Georgia, serif;
+  --font-body: "Inter", -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   --font-code: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* Light theme (default) */
-:root {
-  color-scheme: light;
-  --app-bg: #fdfaf6;
-  --app-bg-alt: #f7f3ee;
-  --app-surface: #ffffff;
-  --app-surface-2: #f4f4f5;
-  --app-surface-3: #e7e7e9;
-  --app-sidebar: rgba(244, 241, 236, 0.85);
-  --app-border: #e5e7eb;
-  --app-border-subtle: #f1f1f3;
-  --app-text-main: #0a0a0a;
-  --app-text-muted: #6b7280;
-  --app-text-subtle: #9ca3af;
+:root,
+:root.dark {
+  color-scheme: dark;
+  --app-bg: #0a0d10;
+  --app-bg-alt: #0e1316;
+  --app-surface: #141a1e;
+  --app-surface-2: #1b2227;
+  --app-surface-3: #252d33;
+  --app-sidebar: #0c1114;
+  --app-topbar: #0c1114;
+  --app-input: #0f1519;
+  --app-border: #33403f;
+  --app-border-subtle: #242e31;
+  --app-text-main: #ece5d6;
+  --app-text-muted: #b0b8b3;
+  --app-text-subtle: #8c9793;
+  --app-primary: #d98a3d;
+  --app-primary-hover: #e9a15a;
+  --app-brass: #b8955e;
+  --app-focus: #5fd4c8;
+  --app-glow: rgba(95, 212, 200, 0.1);
+  --app-danger: #e5655a;
+  --app-success: #6fbf95;
+  --app-warning: #e2b34a;
+  --app-info: #7bbeba;
+  --app-ornament-opacity: 0.7;
 }
 
-/* Dark theme */
-.dark {
-  color-scheme: dark;
-  --app-bg: #1a1a1a;
-  --app-bg-alt: #1f1f1e;
-  --app-surface: #262626;
-  --app-surface-2: #303030;
-  --app-surface-3: #3a3a3a;
-  --app-sidebar: rgba(30, 30, 30, 0.85);
-  --app-border: #333333;
-  --app-border-subtle: #2a2a2a;
-  --app-text-main: #ededed;
-  --app-text-muted: #9ca3af;
-  --app-text-subtle: #6b7280;
+:root.light {
+  color-scheme: light;
+  --app-bg: #f1efe7;
+  --app-bg-alt: #ebe7db;
+  --app-surface: #fcfaf4;
+  --app-surface-2: #f0ece2;
+  --app-surface-3: #e1dacb;
+  --app-sidebar: #e9e5da;
+  --app-topbar: rgba(248, 245, 237, 0.95);
+  --app-input: #fffdf8;
+  --app-border: #c9c2b1;
+  --app-border-subtle: #d8d1c2;
+  --app-text-main: #243138;
+  --app-text-muted: #56656a;
+  --app-text-subtle: #6d7d7e;
+  --app-primary: #8a5a24;
+  --app-primary-hover: #5f3d17;
+  --app-brass: #7a5f36;
+  --app-focus: #1f6e68;
+  --app-glow: rgba(43, 119, 114, 0.08);
+  --app-danger: #b03a2e;
+  --app-success: #2e7a55;
+  --app-warning: #8a6414;
+  --app-info: #2b6f6b;
+  --app-ornament-opacity: 0.35;
 }
 
 body {
   margin: 0;
   min-height: 100vh;
   background-color: var(--app-bg);
+  background-image:
+    radial-gradient(ellipse at 100% 0%, var(--app-glow), transparent 42%),
+    radial-gradient(ellipse at 0% 100%, color-mix(in srgb, var(--app-primary) 5%, transparent), transparent 36%);
   color: var(--app-text-main);
   font-family: var(--font-body);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Upstream landing grid background */
-.landing-grid {
-  background-image: linear-gradient(
-      to right,
-      var(--color-brand-500) 1px,
-      transparent 1px
-    ),
-    linear-gradient(to bottom, var(--color-brand-500) 1px, transparent 1px);
-  background-size: 40px 40px;
-  opacity: 0.08;
-}
-.dark .landing-grid {
-  opacity: 0.04;
+/* Film grain: static, non-interactive, ≤3% so it reads as material, not noise. */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  pointer-events: none;
+  opacity: 0.03;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
 }
 
-/* Custom scrollbar (kept from upstream custom-scrollbar utility) */
+/* Layered so font utilities on buttons/inputs (e.g. `font-code text-[10px]`) still apply. */
+@layer base {
+  button,
+  input,
+  textarea,
+  select {
+    font: inherit;
+  }
+}
+
+:is(a, button, input, select, textarea):focus-visible {
+  outline: 2px solid var(--app-focus);
+  outline-offset: 2px;
+}
+
+.landing-grid {
+  background-image:
+    linear-gradient(to right, var(--app-border) 1px, transparent 1px),
+    linear-gradient(to bottom, var(--app-border) 1px, transparent 1px);
+  background-size: 64px 64px;
+  opacity: 0.12;
+  mask-image: linear-gradient(115deg, transparent 6%, #000 52%, transparent 96%);
+}
+
+.light .landing-grid {
+  opacity: 0.09;
+}
+
+.custom-scrollbar {
+  scrollbar-color: var(--app-border) transparent;
+  scrollbar-width: thin;
+}
+
 .custom-scrollbar::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
+
 .custom-scrollbar::-webkit-scrollbar-track {
   background: transparent;
 }
+
 .custom-scrollbar::-webkit-scrollbar-thumb {
-  background: var(--app-surface-3);
-  border-radius: 9999px;
+  background: var(--app-border);
+  border-radius: 4px;
 }
+
 .custom-scrollbar::-webkit-scrollbar-thumb:hover {
   background: var(--app-text-subtle);
 }
 
 ::selection {
-  background: rgba(229, 106, 74, 0.18);
+  background: color-mix(in srgb, var(--app-focus) 28%, transparent);
+  color: var(--app-text-main);
 }
 
-@keyframes disco-glow {
-  0%, 100% {
-    box-shadow: 0 0 15px rgba(229, 106, 74, 0.6), 0 0 25px rgba(245, 158, 11, 0.3);
-  }
-  33% {
-    box-shadow: 0 0 18px rgba(16, 185, 129, 0.6), 0 0 28px rgba(59, 130, 246, 0.3);
-  }
-  66% {
-    box-shadow: 0 0 18px rgba(168, 85, 247, 0.6), 0 0 28px rgba(236, 72, 153, 0.3);
-  }
-}
-.animate-disco {
-  animation: disco-glow 3s infinite ease-in-out;
-}
 
 /* Material Symbols styling */
 .material-symbols-outlined {
@@ -177,85 +213,74 @@ body {
   font-variation-settings: 'FILL' 1, 'wght' 400, 'GRAD' 0, 'opsz' 24;
 }
 
-/* Topology: router card pulse + electric edge beam (matching upstream 9Router) */
+/* Topology remains alive, but reads like instrumentation rather than an arcade. */
 @keyframes topology-router-pulse {
   0%, 100% {
     transform: translate(-50%, -50%) scale(1);
-    box-shadow:
-      0 0 16px rgba(253, 224, 71, 0.4),
-      0 0 32px rgba(34, 211, 238, 0.35),
-      inset 0 0 12px rgba(250, 204, 21, 0.3);
+    box-shadow: 0 0 0 1px rgba(204, 165, 106, 0.26), 0 0 20px rgba(115, 182, 174, 0.1);
   }
   50% {
-    transform: translate(-50%, -50%) scale(1.05);
-    box-shadow:
-      0 0 24px rgba(253, 224, 71, 0.75),
-      0 0 48px rgba(34, 211, 238, 0.6),
-      0 0 64px rgba(74, 222, 128, 0.35),
-      inset 0 0 18px rgba(250, 204, 21, 0.5);
+    transform: translate(-50%, -50%) scale(1.018);
+    box-shadow: 0 0 0 1px rgba(204, 165, 106, 0.45), 0 0 25px rgba(115, 182, 174, 0.17);
   }
 }
-@keyframes topology-router-icon-shake {
-  0%, 100% { transform: rotate(0deg) scale(1); filter: drop-shadow(0 0 2px #fde047); }
-  25% { transform: rotate(-5deg) scale(1.08); filter: drop-shadow(0 0 6px #facc15); }
-  75% { transform: rotate(5deg) scale(1.08); filter: drop-shadow(0 0 6px #22d3ee); }
-}
-@keyframes topology-router-label-flicker {
-  0%, 100% { text-shadow: 0 0 6px #fde047, 0 0 12px #22d3ee; }
-  50% { text-shadow: 0 0 10px #fff, 0 0 18px #facc15; }
-}
+
 @keyframes topology-edge-dash {
   to { stroke-dashoffset: -36; }
 }
-@keyframes topology-edge-flicker {
-  0%, 100% { opacity: 0.85; }
-  40% { opacity: 1; }
-  55% { opacity: 0.55; }
-  70% { opacity: 0.95; }
-}
-.topology-router-core {
-  animation: topology-router-pulse 0.75s ease-in-out infinite !important;
-  border-color: #fde047 !important;
-}
-.topology-router-icon {
-  animation: topology-router-icon-shake 0.45s ease-in-out infinite;
-}
-.topology-router-label {
-  animation: topology-router-label-flicker 0.7s ease-in-out infinite;
-}
-.topology-router-badge {
-  box-shadow: 0 0 10px #fde047, 0 0 16px rgba(34, 211, 238, 0.6);
-}
-.topology-edge-kame {
-  stroke-dasharray: 8 6;
-  animation: topology-edge-dash 0.22s linear infinite;
-}
-.topology-edge-halo {
-  animation: topology-edge-flicker 0.18s steps(2) infinite;
-}
-.topology-edge-plasma {
-  stroke-dasharray: 14 10;
-  animation: topology-edge-dash 0.18s linear infinite, topology-edge-flicker 0.22s steps(3) infinite;
-}
 
-/* Bidirectional neural streams & shockwave impacts */
 @keyframes topology-edge-dash-reverse {
   to { stroke-dashoffset: 36; }
 }
+
 @keyframes topology-node-bounce {
-  0%, 100% {
-    transform: translate(-50%, -50%) scale(1.02);
-  }
-  50% {
-    transform: translate(-50%, -50%) scale(1.06);
-  }
+  0%, 100% { transform: translate(-50%, -50%) scale(1); }
+  50% { transform: translate(-50%, -50%) scale(1.015); }
 }
+
+.topology-router-core {
+  animation: topology-router-pulse 3.8s ease-in-out infinite !important;
+  border-color: var(--app-primary) !important;
+  background: var(--app-surface) !important;
+}
+
+.topology-router-icon {
+  animation: none;
+  filter: drop-shadow(0 0 4px var(--app-glow));
+}
+
+.topology-router-label {
+  text-shadow: none;
+}
+
+.topology-router-badge {
+  box-shadow: 0 0 0 1px var(--app-border);
+}
+
+.topology-edge-kame {
+  stroke-dasharray: 8 6;
+  animation: topology-edge-dash 5s linear infinite;
+  opacity: 0.5;
+}
+
+.topology-edge-halo {
+  opacity: 0.28;
+}
+
+.topology-edge-plasma {
+  stroke-dasharray: 14 10;
+  animation: topology-edge-dash 6s linear infinite;
+  opacity: 0.45;
+}
+
 .topology-edge-return {
   stroke-dasharray: 6 8;
-  animation: topology-edge-dash-reverse 0.22s linear infinite, topology-edge-flicker 0.28s steps(3) infinite;
+  animation: topology-edge-dash-reverse 5s linear infinite;
+  opacity: 0.5;
 }
+
 .topology-node-active-bounce {
-  animation: topology-node-bounce 0.9s cubic-bezier(0.34, 1.56, 0.64, 1) infinite !important;
+  animation: topology-node-bounce 3s ease-in-out infinite !important;
 }
 
 /* Changelog markdown body styles */
@@ -326,4 +351,186 @@ body {
 }
 .changelog-body strong {
   font-weight: 600;
+}
+
+/*
+ * Shared surfaces for the command console. Layered as components so utility
+ * classes on the same element (e.g. `ui-code border-0 bg-transparent`) win.
+ */
+@layer components {
+.ui-panel {
+  position: relative;
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--radius-brand-lg);
+  background: var(--app-surface);
+  box-shadow: var(--shadow-soft);
+}
+
+.ui-panel::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 18px;
+  width: 54px;
+  height: 1px;
+  background: var(--app-brass);
+  opacity: var(--app-ornament-opacity);
+  pointer-events: none;
+}
+
+.ui-heading {
+  font-family: var(--font-headline);
+  font-size: clamp(1.5rem, 2.4vw, 2.1rem);
+  font-weight: 500;
+  line-height: 1.15;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.ui-kicker {
+  display: inline-block;
+  color: var(--app-brass);
+  font-family: var(--font-code);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.5;
+  letter-spacing: 0.17em;
+  text-transform: uppercase;
+}
+
+.ui-empty {
+  border: 1px dashed var(--app-border);
+  border-radius: var(--radius-brand-lg);
+  background: var(--app-surface-2);
+  color: var(--app-text-muted);
+  padding: 1.25rem;
+}
+
+.ui-code {
+  border: 1px solid var(--app-border-subtle);
+  border-radius: var(--radius-brand);
+  background: var(--app-input);
+  color: var(--app-text-main);
+  font-family: var(--font-code);
+  font-size: 0.8rem;
+  line-height: 1.6;
+  overflow-x: auto;
+  overflow-wrap: anywhere;
+}
+
+.ui-input {
+  min-width: 0;
+  min-height: 2.5rem;
+  padding: 0.55rem 0.75rem;
+  border: 1px solid var(--app-border);
+  border-radius: var(--radius-brand);
+  background: var(--app-input);
+  color: var(--app-text-main);
+  transition: border-color 80ms var(--ease-imperial), box-shadow 80ms var(--ease-imperial);
+}
+
+.ui-input::placeholder {
+  color: var(--app-text-subtle);
+}
+
+.ui-input:focus-visible {
+  border-color: var(--app-focus);
+  /* HUD "lock-on" bar */
+  box-shadow: inset 2px 0 0 var(--app-focus);
+}
+
+.ui-stat {
+  font-family: var(--font-code);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.04em;
+}
+
+/* Hairline divider; put "◆" inside for the ornamental variant. */
+.ui-divider {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  color: var(--app-brass);
+  font-size: 0.6rem;
+  line-height: 1;
+}
+
+.ui-divider:empty {
+  gap: 0;
+}
+
+.ui-divider::before,
+.ui-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--app-border);
+}
+
+.ui-frame {
+  position: relative;
+}
+
+.ui-frame::after {
+  --c: var(--app-brass);
+  --l: 10px;
+  content: '';
+  position: absolute;
+  inset: -1px;
+  pointer-events: none;
+  background:
+    linear-gradient(var(--c) 0 0) top left / var(--l) 1px,
+    linear-gradient(var(--c) 0 0) top left / 1px var(--l),
+    linear-gradient(var(--c) 0 0) bottom right / var(--l) 1px,
+    linear-gradient(var(--c) 0 0) bottom right / 1px var(--l);
+  background-repeat: no-repeat;
+  opacity: var(--app-ornament-opacity);
+}
+
+.ui-glitch {
+  animation: ui-glitch 120ms steps(2, end) 1;
+}
+
+/* The only animated status mark: a slow signal ring for live state. */
+.ui-pulse {
+  animation: ui-pulse 2.4s var(--ease-imperial) infinite;
+}
+}
+
+@keyframes ui-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--app-focus) 45%, transparent); }
+  50% { box-shadow: 0 0 0 4px transparent; }
+}
+
+/*
+ * Chamfer only solid-filled elements; clip-path would cut a border's corners.
+ * Unlayered so the inset focus ring beats the global one, which would be clipped.
+ */
+.ui-chamfer {
+  clip-path: polygon(8px 0, 100% 0, 100% calc(100% - 8px), calc(100% - 8px) 100%, 0 100%, 0 8px);
+}
+
+.ui-chamfer:focus-visible {
+  outline-color: var(--app-bg);
+  outline-offset: -4px;
+}
+
+/* For fields whose surrounding panel already signals focus (e.g. the command palette). */
+.ui-bare:focus-visible {
+  outline: none;
+}
+
+@keyframes ui-glitch {
+  0% { transform: translateX(0); box-shadow: -2px 0 0 var(--app-danger), 2px 0 0 var(--app-focus); }
+  50% { transform: translateX(2px); box-shadow: 2px 0 0 var(--app-danger), -2px 0 0 var(--app-focus); }
+  100% { transform: translateX(0); box-shadow: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

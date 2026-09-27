@@ -340,67 +340,88 @@
   }
 </script>
 
-<div class="mx-auto max-w-6xl space-y-4 p-4 md:p-6">
-  <header>
-    <h1 class="text-xl font-semibold">Bug Bounty Assist</h1>
-    <p class="mt-1 max-w-4xl text-sm text-text-muted">
-      Describe the program and its authorized scope so the assistant has explicit, visible engagement context instead of guessing at authorization. It only adds scope context to your own request and cannot change a provider’s policy. It never reveals or replaces a provider’s hidden system prompt.
+<div class="mx-auto flex w-full min-w-0 max-w-6xl flex-col gap-6">
+  <header class="flex flex-col gap-2">
+    <p class="ui-kicker">Tools</p>
+    <h1 class="ui-heading text-text-main">Bug Bounty Assist</h1>
+    <p class="max-w-3xl text-sm leading-relaxed text-text-muted">
+      Store the program scope you are authorized to test and attach it to a request as visible engagement context, instead of leaving authorization implicit.
+    </p>
+    <p class="max-w-3xl text-xs leading-relaxed text-text-subtle">
+      It adds scope facts to your own request and cannot change a provider’s policy. It never reveals or replaces a provider’s hidden system prompt.
     </p>
   </header>
 
   {#if error}
-    <div role="alert" class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
+    <div role="alert" class="rounded-[4px] border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
   {/if}
   {#if notice}
-    <div role="status" class="rounded border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-300">{notice}</div>
+    <div role="status" class="rounded-[4px] border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">{notice}</div>
   {/if}
 
-  <div class="grid gap-4 xl:grid-cols-[minmax(250px,0.8fr)_minmax(0,1.7fr)]">
-    <Card>
-      <div class="mb-3 flex items-center justify-between">
-        <h2 class="font-semibold">Program profiles</h2>
+  <div class="grid min-w-0 gap-6 xl:grid-cols-[minmax(250px,0.8fr)_minmax(0,1.7fr)]">
+    <Card class="min-w-0">
+      <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+        <div class="min-w-0">
+          <p class="ui-kicker">Programs</p>
+          <h2 class="mt-0.5 font-headline text-lg font-medium leading-tight text-text-main">Program profiles</h2>
+        </div>
         <Button onclick={startNew}>New profile</Button>
       </div>
       {#if loading}
-        <p class="text-sm text-text-muted">Loading…</p>
+        <div class="flex flex-col gap-2" role="status" aria-live="polite">
+          <span class="sr-only">Loading profiles…</span>
+          <div class="h-16 animate-pulse rounded-[4px] bg-surface-2" aria-hidden="true"></div>
+          <div class="h-16 animate-pulse rounded-[4px] bg-surface-2" aria-hidden="true"></div>
+        </div>
       {:else if profiles.length === 0}
-        <div class="rounded border border-slate-700 bg-slate-900/40 p-3 text-sm text-text-muted">
-          No profiles yet. Start with the program’s exact in-scope and out-of-scope assets. Empty scope is refused so a request cannot imply authorization to an unspecified target.
+        <div class="ui-empty text-sm">
+          <p class="font-medium text-text-main">No scope profiles yet.</p>
+          <p class="mt-1 leading-relaxed">
+            Start with the program’s exact in-scope and out-of-scope assets. Empty scope is refused, so a request cannot imply authorization to an unspecified target.
+          </p>
+          <Button class="mt-3" variant="secondary" onclick={startNew}>New profile</Button>
         </div>
       {:else}
-        <ul class="space-y-2">
+        <ul class="flex flex-col gap-2">
           {#each profiles as p (p.id)}
             {@const isSelected = selectedId === p.id}
             <li>
               <button
                 type="button"
                 aria-pressed={isSelected}
-                class="w-full rounded border px-3 py-2 text-left {isSelected
-                  ? 'border-brand-500 bg-brand-950/30'
-                  : 'border-slate-700 hover:border-slate-500'}"
+                class="w-full min-w-0 rounded-[4px] border px-3 py-2.5 text-left transition-colors duration-150 cursor-pointer {isSelected
+                  ? 'border-primary/60 bg-surface-2'
+                  : 'border-border-subtle hover:border-border hover:bg-surface-2/60'}"
                 onclick={() => selectProfile(p.id)}
               >
-                <span class="block font-medium">{p.program}</span>
-                <span class="block font-mono text-xs text-text-muted">{p.id}</span>
-                <span class="block text-xs text-text-muted">{p.inScope.length} in-scope · {p.outOfScope?.length ?? 0} excluded</span>
+                <span class="flex min-w-0 items-center gap-2">
+                  {#if isSelected}
+                    <span class="material-symbols-outlined shrink-0 text-[16px] text-primary" aria-hidden="true">check</span>
+                  {/if}
+                  <span class="min-w-0 flex-1 truncate text-sm font-medium text-text-main">{p.program}</span>
+                </span>
+                <span class="mt-0.5 block truncate font-code text-[11px] text-text-subtle">{p.id}</span>
+                <span class="ui-stat mt-1 block text-[11px] text-text-muted">{p.inScope.length} in · {p.outOfScope?.length ?? 0} out</span>
               </button>
             </li>
           {/each}
         </ul>
       {/if}
       {#if selected && !editing}
-        <div class="mt-3 flex gap-2">
+        <div class="mt-4 flex flex-wrap gap-2 border-t border-border-subtle pt-3">
           <Button onclick={() => startEdit(selected!)}>Edit</Button>
           <Button variant="danger" onclick={() => requestDelete(selected!.id)}>Delete</Button>
         </div>
       {/if}
     </Card>
 
-    <div class="space-y-4">
+    <div class="flex min-w-0 flex-col gap-6">
       {#if editing}
-        <Card>
-          <h2 class="mb-3 font-semibold">{draft.id ? `Edit ${draft.program}` : 'New program profile'}</h2>
-          <div class="grid gap-3 md:grid-cols-2">
+        <Card class="min-w-0">
+          <p class="ui-kicker">{isEditingExisting ? 'Edit' : 'Create'}</p>
+          <h2 class="mt-0.5 mb-4 font-headline text-lg font-medium leading-tight text-text-main">{draft.id ? `Edit ${draft.program}` : 'New program profile'}</h2>
+          <div class="grid min-w-0 gap-4 md:grid-cols-2">
             <Input
               label="Profile id"
               bind:value={draft.id}
@@ -417,148 +438,203 @@
               klass="md:col-span-2"
               error={programUrlInvalid}
             />
-            <div class="text-sm">
-              <label for="bounty-in-scope" class="block font-medium text-text-main">In-scope assets (one per line)</label>
+            <div class="min-w-0 text-sm">
+              <label for="bounty-in-scope" class="block text-sm font-medium text-text-main">In-scope assets <span class="text-text-muted">(one per line)</span></label>
               <textarea
                 id="bounty-in-scope"
-                class="mt-1 min-h-28 w-full rounded border border-slate-700 bg-slate-950 p-2 font-mono text-xs"
+                aria-describedby="bounty-in-scope-hint"
+                aria-invalid={inScopeInvalid ? 'true' : undefined}
+                rows={6}
+                style={inScopeInvalid ? 'border-color: var(--color-danger)' : ''}
+                class="ui-input mt-1 w-full font-code text-xs leading-relaxed"
                 bind:value={inScopeText}
                 placeholder="api.example.com&#10;app.example.com"
               ></textarea>
+              <p id="bounty-in-scope-hint" class="ui-stat mt-1 text-[11px] text-text-muted">{splitLines(inScopeText).length} / {MAX_SCOPE_ITEMS} entries</p>
               {#if inScopeInvalid}
-                <p class="mt-1 text-xs text-danger">{inScopeInvalid}</p>
+                <p class="mt-1 flex items-start gap-1 text-xs text-danger">
+                  <span class="material-symbols-outlined text-[14px]" aria-hidden="true">error</span>
+                  {inScopeInvalid}
+                </p>
               {/if}
             </div>
-            <div class="text-sm">
-              <label for="bounty-out-of-scope" class="block font-medium text-text-main">Out-of-scope assets (one per line)</label>
+            <div class="min-w-0 text-sm">
+              <label for="bounty-out-of-scope" class="block text-sm font-medium text-text-main">Out-of-scope assets <span class="text-text-muted">(one per line)</span></label>
               <textarea
                 id="bounty-out-of-scope"
-                class="mt-1 min-h-28 w-full rounded border border-slate-700 bg-slate-950 p-2 font-mono text-xs"
+                aria-describedby="bounty-out-of-scope-hint"
+                aria-invalid={outOfScopeInvalid ? 'true' : undefined}
+                rows={6}
+                style={outOfScopeInvalid ? 'border-color: var(--color-danger)' : ''}
+                class="ui-input mt-1 w-full font-code text-xs leading-relaxed"
                 bind:value={outOfScopeText}
                 placeholder="billing.example.com"
               ></textarea>
+              <p id="bounty-out-of-scope-hint" class="ui-stat mt-1 text-[11px] text-text-muted">{splitLines(outOfScopeText).length} / {MAX_SCOPE_ITEMS} entries</p>
               {#if outOfScopeInvalid}
-                <p class="mt-1 text-xs text-danger">{outOfScopeInvalid}</p>
+                <p class="mt-1 flex items-start gap-1 text-xs text-danger">
+                  <span class="material-symbols-outlined text-[14px]" aria-hidden="true">error</span>
+                  {outOfScopeInvalid}
+                </p>
               {/if}
             </div>
-            <div class="text-sm md:col-span-2">
-              <label for="bounty-rules" class="block font-medium text-text-main">Program testing rules</label>
+            <div class="min-w-0 text-sm md:col-span-2">
+              <label for="bounty-rules" class="block text-sm font-medium text-text-main">Program testing rules</label>
               <textarea
                 id="bounty-rules"
-                class="mt-1 min-h-20 w-full rounded border border-slate-700 bg-slate-950 p-2 text-xs"
+                aria-invalid={rulesInvalid ? 'true' : undefined}
+                rows={4}
+                style={rulesInvalid ? 'border-color: var(--color-danger)' : ''}
+                class="ui-input mt-1 w-full text-xs leading-relaxed"
                 bind:value={draft.rules}
                 placeholder="No destructive testing. No access to other users’ data."
               ></textarea>
               {#if rulesInvalid}
-                <p class="mt-1 text-xs text-danger">{rulesInvalid}</p>
+                <p class="mt-1 flex items-start gap-1 text-xs text-danger">
+                  <span class="material-symbols-outlined text-[14px]" aria-hidden="true">error</span>
+                  {rulesInvalid}
+                </p>
               {/if}
             </div>
-            <div class="text-sm md:col-span-2">
-              <label for="bounty-custom-context" class="block font-medium text-text-main">Additional engagement context (optional)</label>
+            <div class="min-w-0 text-sm md:col-span-2">
+              <label for="bounty-custom-context" class="block text-sm font-medium text-text-main">Additional engagement context <span class="text-text-muted">(optional)</span></label>
               <textarea
                 id="bounty-custom-context"
-                class="mt-1 min-h-16 w-full rounded border border-slate-700 bg-slate-950 p-2 text-xs"
+                aria-invalid={customContextInvalid ? 'true' : undefined}
+                rows={3}
+                style={customContextInvalid ? 'border-color: var(--color-danger)' : ''}
+                class="ui-input mt-1 w-full text-xs leading-relaxed"
                 bind:value={draft.customContext}
                 placeholder="Account type, testing window, or other program-specific limits."
               ></textarea>
               {#if customContextInvalid}
-                <p class="mt-1 text-xs text-danger">{customContextInvalid}</p>
+                <p class="mt-1 flex items-start gap-1 text-xs text-danger">
+                  <span class="material-symbols-outlined text-[14px]" aria-hidden="true">error</span>
+                  {customContextInvalid}
+                </p>
               {/if}
             </div>
           </div>
-          <p class="mt-3 text-xs text-warning">
-            The profile is stored in the local database and sent to the AI provider when selected. Do not include API keys, passwords, or customer data. This is prompt context, not technical enforcement of network scope.
+          <p class="mt-3 rounded-[4px] border border-warning/40 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
+            The profile is stored in the local database and sent to the AI provider when selected. Do not include API keys, passwords, or customer data. This is prompt context, not technical enforcement of network scope: it does not restrict where traffic goes and does not stop testing outside these assets.
           </p>
-          <div class="mt-3 flex gap-2">
-            <Button onclick={saveProfile} disabled={saving} title={hasBlockingProblem ? 'Fix the messages above before saving.' : ''}>
+          <div class="mt-4 flex flex-wrap gap-2">
+            <Button onclick={saveProfile} disabled={saving} loading={saving} title={hasBlockingProblem ? 'Fix the messages above before saving.' : ''}>
               {saving ? 'Saving…' : 'Save profile'}
             </Button>
             <Button variant="secondary" onclick={cancelEdit}>Cancel</Button>
           </div>
         </Card>
       {:else if selected}
-        <Card>
+        <Card class="min-w-0">
           <div class="flex flex-wrap items-start justify-between gap-3">
-            <div>
-              <h2 class="font-semibold">Apply to a client request</h2>
-              <p class="mt-1 text-sm text-text-muted">The gateway adds this scope context to the outgoing system prompt only when the request selects this profile.</p>
+            <div class="min-w-0">
+              <p class="ui-kicker">Selector</p>
+              <h2 class="mt-0.5 font-headline text-lg font-medium leading-tight text-text-main">Apply to a client request</h2>
+              <p class="mt-1 text-sm leading-relaxed text-text-muted">The gateway adds this scope context to the outgoing system prompt only when the request selects this profile with the header below. No profile is applied by default.</p>
             </div>
             <Button onclick={() => copyText(`X-9Router-Bounty-Profile: ${selected!.id}`, 'Request header')}>Copy request header</Button>
           </div>
-          <pre class="mt-3 overflow-x-auto rounded bg-black/30 p-3 text-xs">X-9Router-Bounty-Profile: {selected.id}</pre>
-          <dl class="mt-3 space-y-1 text-xs">
-            <div class="flex flex-wrap gap-1">
+          <pre class="ui-code mt-3 px-3 py-2 text-xs">X-9Router-Bounty-Profile: {selected.id}</pre>
+          <dl class="mt-4 space-y-2 text-xs">
+            <div class="flex flex-wrap items-baseline gap-1.5">
               <dt class="text-text-muted">Stored program:</dt>
               <dd>{selected.program}</dd>
             </div>
-            <div class="flex flex-wrap gap-1">
+            <div class="flex flex-wrap items-baseline gap-1.5">
               <dt class="text-text-muted">Stored scope:</dt>
-              <dd>{selected.inScope.length} in-scope · {selected.outOfScope?.length ?? 0} out-of-scope</dd>
+              <dd class="ui-stat">{selected.inScope.length} in-scope · {selected.outOfScope?.length ?? 0} out-of-scope</dd>
             </div>
           </dl>
-          <p class="mt-2 text-xs text-text-muted">Check these against the preview below before sending. The selector header is consumed locally and not forwarded upstream. The generated context does not override provider safety policies and does not prevent the model or a client from testing outside the listed assets.</p>
+          <p class="mt-3 border-t border-border-subtle pt-3 text-xs leading-relaxed text-text-muted">
+            Check these against the preview below before sending. The selector header is consumed locally and not forwarded upstream. The generated context does not override provider safety policies, and it does not prevent the model, the client, or you from testing outside the listed assets.
+          </p>
         </Card>
       {/if}
 
-      <Card>
-        <div class="flex items-center justify-between gap-3">
-          <div>
-            <h2 class="font-semibold">Scope context preview</h2>
-            <p class="mt-1 text-xs text-text-muted">The exact text the gateway prepends to the system prompt for the selected profile. It is not the provider’s hidden internal prompt, and it is not applied to any request that does not send the selector header.</p>
+      <Card class="min-w-0">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+          <div class="min-w-0">
+            <p class="ui-kicker">Preview</p>
+            <h2 class="mt-0.5 font-headline text-lg font-medium leading-tight text-text-main">Scope context preview</h2>
+            <p class="mt-1 text-xs leading-relaxed text-text-muted">The exact text the gateway prepends to the system prompt for the selected profile. It is not the provider’s hidden internal prompt, and it is not applied to a request that sends no selector header.</p>
           </div>
           {#if selected && preview}<Button onclick={() => copyText(preview, 'Context')}>Copy</Button>{/if}
         </div>
         {#if !selected}
-          <p class="mt-3 text-sm text-text-muted">Select a profile to preview the context.</p>
+          <div class="ui-empty mt-3 text-sm">
+            <p class="font-medium text-text-main">No profile selected.</p>
+            <p class="mt-1 leading-relaxed">Select a profile to preview the exact context the gateway would prepend.</p>
+          </div>
         {:else}
           {#if previewId && previewId !== selected.id}
-            <p class="mt-3 rounded border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-warning">
+            <p class="mt-3 rounded-[4px] border border-warning/40 bg-warning/10 px-3 py-2 text-xs leading-relaxed text-warning">
               This preview belongs to “{previewId}”, not “{selected.id}”. Re-select “{selected.id}” to load its context.
             </p>
           {/if}
-          <pre class="mt-3 max-h-64 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-3 text-xs">{preview || 'Loading…'}</pre>
+          <p class="mt-3 rounded-[4px] border border-border-subtle bg-surface-2 px-3 py-2 text-xs leading-relaxed text-text-muted">
+            This text tells a provider which assets you say are authorized. It is a statement of scope, not a control: it does not restrict where traffic is sent and does not stop testing outside these assets.
+          </p>
+          <pre class="ui-code mt-3 max-h-64 overflow-auto whitespace-pre-wrap px-3 py-2 text-xs">{preview || 'Loading…'}</pre>
         {/if}
       </Card>
 
-      <Card>
-        <h2 class="font-semibold">Hunter helpers</h2>
-        <p class="mt-1 text-xs text-text-muted">Build a scoped prompt for analysis or reporting. Evidence is sent to the local gateway to build the prompt and returned to this page; it is not written to the database and this helper does not call an AI provider.</p>
-        <div class="mt-3 space-y-3">
+      <Card class="min-w-0">
+        <p class="ui-kicker">Helpers</p>
+        <h2 class="mt-0.5 font-headline text-lg font-medium leading-tight text-text-main">Hunter helpers</h2>
+        <p class="mt-1 text-xs leading-relaxed text-text-muted">Build a scoped prompt for analysis or reporting. Evidence is sent to the local gateway to build the prompt and returned to this page; it is not written to the database and this helper does not call an AI provider.</p>
+        <p class="mt-2 text-xs leading-relaxed text-text-subtle">The built prompt is a template you still choose to send. It does not authorize anything by itself and does not enforce the scope you listed.</p>
+        <div class="mt-4 flex flex-col gap-4">
           {#if helpers.length === 0}
-            <p class="text-sm text-text-muted">This gateway returned no helper templates.</p>
+            <div class="ui-empty text-sm">
+              <p class="font-medium text-text-main">No helper templates returned.</p>
+              <p class="mt-1 leading-relaxed">This gateway build registered no bounty helper tasks, so there is nothing to build a prompt from.</p>
+            </div>
           {/if}
-          <label class="block text-sm font-medium text-text-main" for="bounty-helper-kind">Helper task</label>
-          <select
-            id="bounty-helper-kind"
-            class="mt-1 w-full rounded border border-slate-700 bg-slate-950 p-2"
-            bind:value={helperKind}
-          >
-            {#each helpers as helper (helper.id)}
-              <option value={helper.id}>{helper.title} — {helper.description}</option>
-            {/each}
-          </select>
-          <label class="block text-sm font-medium text-text-main" for="bounty-helper-evidence">Evidence to analyze (optional)</label>
-          <textarea
-            id="bounty-helper-evidence"
-            aria-describedby="bounty-helper-evidence-hint"
-            class="mt-1 min-h-24 w-full rounded border border-slate-700 bg-slate-950 p-2 font-mono text-xs"
-            bind:value={evidence}
-            placeholder="Observed status, redacted response snippet, reproduction notes. Remove tokens and other users’ data."
-          ></textarea>
-          <p id="bounty-helper-evidence-hint" class="text-xs text-text-muted">
-            Not saved in this browser and not stored by the gateway. Clearing it after use is still recommended; it remains in page memory while this tab is open.
-          </p>
-          {#if evidenceInvalid}
-            <p class="text-xs text-danger">{evidenceInvalid}</p>
-          {/if}
+          <div class="min-w-0">
+            <label class="block text-sm font-medium text-text-main" for="bounty-helper-kind">Helper task</label>
+            <select
+              id="bounty-helper-kind"
+              class="ui-input mt-1 w-full text-sm"
+              bind:value={helperKind}
+            >
+              {#each helpers as helper (helper.id)}
+                <option value={helper.id}>{helper.title} — {helper.description}</option>
+              {/each}
+            </select>
+          </div>
+          <div class="min-w-0">
+            <label class="block text-sm font-medium text-text-main" for="bounty-helper-evidence">Evidence to analyze <span class="text-text-muted">(optional)</span></label>
+            <textarea
+              id="bounty-helper-evidence"
+              aria-describedby="bounty-helper-evidence-hint"
+              aria-invalid={evidenceInvalid ? 'true' : undefined}
+              rows={5}
+              style={evidenceInvalid ? 'border-color: var(--color-danger)' : ''}
+              class="ui-input mt-1 w-full font-code text-xs leading-relaxed"
+              bind:value={evidence}
+              placeholder="Observed status, redacted response snippet, reproduction notes. Remove tokens and other users’ data."
+            ></textarea>
+            <p id="bounty-helper-evidence-hint" class="mt-1 text-xs leading-relaxed text-text-muted">
+              Not saved in this browser and not stored by the gateway. Clearing it after use is still recommended; it remains in page memory while this tab is open.
+            </p>
+            {#if evidenceInvalid}
+              <p class="mt-1 flex items-start gap-1 text-xs text-danger">
+                <span class="material-symbols-outlined text-[14px]" aria-hidden="true">error</span>
+                {evidenceInvalid}
+              </p>
+            {/if}
+          </div>
           <div class="flex flex-wrap gap-2">
-            <Button onclick={buildPrompt} disabled={!canBuild}>{building ? 'Building…' : 'Build prompt'}</Button>
+            <Button onclick={buildPrompt} disabled={!canBuild} loading={building}>{building ? 'Building…' : 'Build prompt'}</Button>
             {#if evidence}<Button variant="secondary" onclick={clearEvidence}>Clear evidence</Button>{/if}
             {#if helperPrompt}<Button variant="secondary" onclick={() => copyText(helperPrompt, `Prompt for “${helperProfileId}”`)}>Copy prompt</Button>{/if}
           </div>
           {#if helperPrompt}
-            <p class="text-xs text-text-muted">Built with the scope profile “{helperProfileId}” and the selected helper task.</p>
-            <pre class="max-h-72 overflow-auto whitespace-pre-wrap rounded bg-black/30 p-3 text-xs">{helperPrompt}</pre>
+            <div>
+              <p class="text-xs leading-relaxed text-text-muted">Built with the scope profile “{helperProfileId}” and the selected helper task.</p>
+              <pre class="ui-code mt-2 max-h-72 overflow-auto whitespace-pre-wrap px-3 py-2 text-xs">{helperPrompt}</pre>
+            </div>
           {/if}
         </div>
       </Card>

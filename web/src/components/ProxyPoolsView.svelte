@@ -44,6 +44,9 @@
 
   let proxyPools = $state<ProxyPool[]>([])
   let loading = $state(true)
+  // A failed list fetch must not masquerade as "no pools": the operator would
+  // read the empty state and create duplicates of pools that already exist.
+  let loadError = $state('')
   let showFormModal = $state(false)
   let showBatchImportModal = $state(false)
   let showVercelModal = $state(false)
@@ -84,14 +87,28 @@
     })
   }
 
+  // Read the list directly instead of via api.getProxyPools(): that helper
+  // resolves to [] on any failure, so a broken request is indistinguishable
+  // from an empty table and the operator is invited to re-create pools that
+  // already exist. Same URL, same auth header, same response shape.
   async function fetchProxyPools() {
     try {
-      proxyPools = sortPools(await api.getProxyPools(true))
+      const res = await fetch('/api/proxy-pools?includeUsage=true', { headers: getAuthHeaders() })
+      if (!res.ok) throw new Error(`Request failed with status ${res.status}`)
+      const data = await res.json()
+      proxyPools = sortPools(data.proxyPools || [])
+      loadError = ''
     } catch (err) {
       console.log('Error fetching proxy pools:', err)
+      loadError = err instanceof Error ? err.message : 'Failed to load proxy pools'
     } finally {
       loading = false
     }
+  }
+
+  async function retryFetchProxyPools() {
+    loading = true
+    await fetchProxyPools()
   }
 
   onMount(() => {
@@ -695,7 +712,16 @@
         </div>
       {/if}
 
-      {#if proxyPools.length === 0}
+      {#if loadError && proxyPools.length === 0}
+        <div class="text-center py-10">
+          <p class="text-text-main font-medium mb-1">Could not load proxy pools</p>
+          <p class="text-sm text-danger mb-4">{loadError}</p>
+          <Button variant="secondary" onclick={retryFetchProxyPools} disabled={loading}>
+            <span class="material-symbols-outlined text-[18px]">refresh</span>
+            Retry
+          </Button>
+        </div>
+      {:else if proxyPools.length === 0}
         <div class="text-center py-10">
           <p class="text-text-main font-medium mb-1">No proxy pool entries yet</p>
           <p class="text-sm text-text-muted mb-4">

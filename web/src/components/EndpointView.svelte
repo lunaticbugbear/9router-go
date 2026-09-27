@@ -11,14 +11,16 @@
     EyeOff,
     Key,
     Loader2,
-    Plus,
     Power,
     Radio,
     Shield,
-    Trash2,
-    X
+    Trash2
   } from 'lucide-svelte'
+  import Badge from '../lib/ui/Badge.svelte'
+  import Button from '../lib/ui/Button.svelte'
   import Card from '../lib/ui/Card.svelte'
+  import ConfirmModal from '../lib/ui/ConfirmModal.svelte'
+  import Modal from '../lib/ui/Modal.svelte'
   import Toggle from '../lib/ui/Toggle.svelte'
   import { api, type APIKey, type Settings, type TunnelStatusResponse } from '../api/client'
 
@@ -40,6 +42,8 @@
   let requireLogin = $state(true)
   let hasPassword = $state(true)
   let tunnelDashboardAccess = $state(false)
+  let endpointSettingsError = $state('')
+  let tunnelDashboardAccessError = $state('')
   let copiedId = $state<string | null>(null)
   let shownKeyIds = $state<Set<string>>(new Set())
 
@@ -250,24 +254,26 @@
   // Toggle Require API Key
   async function toggleRequireApiKey(value: boolean) {
     requireApiKey = value
+    endpointSettingsError = ''
     try {
       await api.updateSettings({ requireApiKey: value })
       onRefresh?.()
     } catch (err) {
       requireApiKey = !value
-      alert(`Failed to update requireApiKey: ${err instanceof Error ? err.message : String(err)}`)
+      endpointSettingsError = err instanceof Error ? err.message : String(err)
     }
   }
 
   // Toggle Tunnel Dashboard Access
   async function toggleTunnelDashboardAccess(value: boolean) {
     tunnelDashboardAccess = value
+    tunnelDashboardAccessError = ''
     try {
       await api.updateSettings({ tunnelDashboardAccess: value })
       onRefresh?.()
     } catch (err) {
       tunnelDashboardAccess = !value
-      alert(`Failed to update tunnelDashboardAccess: ${err instanceof Error ? err.message : String(err)}`)
+      tunnelDashboardAccessError = err instanceof Error ? err.message : String(err)
     }
   }
 
@@ -348,6 +354,7 @@
     showTailscaleModal = false
     isTailscaleLoading = true
     tailscaleStatusText = 'Connecting to Tailscale...'
+    tailscaleAuthUrl = ''
     tailscaleError = null
 
     try {
@@ -358,7 +365,6 @@
       }
       if (res.needsLogin && res.authUrl) {
         tailscaleAuthUrl = res.authUrl
-        tailscaleStatusText = 'Login required'
         return
       }
       if (res.tunnelUrl) {
@@ -390,6 +396,11 @@
   }
 
   // Keys management
+  function closeCreateKeyModal() {
+    isCreateKeyOpen = false
+    newKeyName = ''
+  }
+
   async function handleCreateKey(e: SubmitEvent) {
     e.preventDefault()
     if (!newKeyName.trim()) return
@@ -463,70 +474,157 @@
     { icon: 'code', title: 'Use in Cursor/Cline', desc: 'Connect AI tools remotely' },
     { icon: 'lock', title: 'Encrypted', desc: 'End-to-end TLS via Cloudflare' },
   ]
+
+  // One honest headline for the whole page: is this endpoint actually usable?
+  // "Open" is reserved for the deliberate no-auth state, never for "unknown".
+  type EndpointTone = 'success' | 'warning' | 'danger' | 'neutral'
+
+  let activeKeyCount = $derived(localKeys.filter((k) => k.isActive === 1 || k.isActive === true).length)
+  let keyCountLabel = $derived(
+    localKeys.length === 0
+      ? 'No keys yet'
+      : activeKeyCount === 0
+        ? `${localKeys.length} ${localKeys.length === 1 ? 'key' : 'keys'}, all paused`
+        : activeKeyCount === localKeys.length
+          ? `${activeKeyCount} active ${activeKeyCount === 1 ? 'key' : 'keys'}`
+          : `${activeKeyCount} of ${localKeys.length} keys active`
+  )
+  let hasPublicRoute = $derived(tunnelRunning || tailscaleRunning)
+
+  let endpointState = $derived.by((): { label: string; detail: string; tone: EndpointTone } => {
+    if (hasPublicRoute && !requireApiKey) {
+      return {
+        label: 'Exposed without a key',
+        detail: 'A tunnel is live and "Require API key" is off, so anyone who can reach the URL can send requests.',
+        tone: 'danger',
+      }
+    }
+    if (isLoginUnsafe) {
+      return {
+        label: 'Dashboard login not hardened',
+        detail: 'The dashboard itself is reachable with weak credentials. Harden login before exposing it remotely.',
+        tone: 'warning',
+      }
+    }
+    if (!requireApiKey) {
+      return {
+        label: 'Open endpoint',
+        detail: 'No key is required — any process that can reach this host may send requests.',
+        tone: 'warning',
+      }
+    }
+    if (activeKeyCount === 0) {
+      return {
+        label: 'No active key',
+        detail: 'Key checking is on but every key is paused, so requests will be rejected.',
+        tone: 'danger',
+      }
+    }
+    return {
+      label: 'Ready for requests',
+      detail: `${keyCountLabel} can authenticate against this endpoint.`,
+      tone: 'success',
+    }
+  })
+
+  const endpointStateTone: Record<EndpointTone, string> = {
+    success: 'text-success',
+    warning: 'text-warning',
+    danger: 'text-danger',
+    neutral: 'text-text-muted',
+  }
+
+  const endpointStateDot: Record<EndpointTone, string> = {
+    success: 'bg-success',
+    warning: 'bg-warning',
+    danger: 'bg-danger',
+    neutral: 'bg-text-subtle',
+  }
 </script>
 
 <div class="flex flex-col gap-6">
   <!-- TOP SECTION: API Endpoint Card -->
   <Card padding="md" class="space-y-4">
-    <div class="flex items-center gap-2 mb-2">
-      <div class="p-2 rounded-lg bg-brand-500/10 text-brand-500">
-        <Radio class="w-5 h-5" />
+    <div class="mb-2 flex flex-wrap items-start justify-between gap-3">
+      <div class="flex min-w-0 items-start gap-3">
+        <div class="flex size-9 shrink-0 items-center justify-center rounded-brand border border-border-subtle bg-surface-2 text-primary">
+          <Radio class="w-5 h-5" />
+        </div>
+        <div class="min-w-0">
+          <span class="ui-kicker">I · Gateway</span>
+          <h2 class="mt-1 font-headline text-lg font-medium leading-tight text-text-main">
+            API Endpoint
+          </h2>
+          <p class="mt-0.5 text-xs leading-relaxed text-text-muted">
+            Direct, secure connection points to your local AI router
+          </p>
+        </div>
       </div>
-      <div>
-        <h2 class="text-lg font-semibold text-text-main flex items-center gap-2">
-          API Endpoint
-        </h2>
-        <p class="text-xs text-text-muted">Direct, secure connection points to your local AI router</p>
+      <div class="flex flex-col items-start gap-1 sm:items-end">
+        <Badge tone={endpointState.tone}>{endpointState.label}</Badge>
+        <span class="text-[11px] text-text-subtle">{keyCountLabel}</span>
       </div>
+    </div>
+
+    <!-- Connection state: one plain sentence explaining the badge above. -->
+    <div class="flex items-start gap-2 rounded-brand border border-border-subtle bg-surface-2/60 px-3 py-2">
+      <span class="mt-1.5 size-1.5 shrink-0 rounded-full {endpointStateDot[endpointState.tone]}"></span>
+      <p class="min-w-0 flex-1 text-xs leading-relaxed text-text-muted">
+        <span class="font-semibold {endpointStateTone[endpointState.tone]}">{endpointState.label}.</span>
+        {endpointState.detail}
+      </p>
     </div>
 
     <div class="flex flex-col gap-3">
       <!-- Local Endpoint Field -->
-      <div class="flex items-center gap-2">
-        <span class="text-xs font-mono px-2 py-1 rounded shrink-0 min-w-[90px] text-center bg-surface-2 text-text-muted font-semibold border border-border">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <span class="w-full shrink-0 rounded-brand border border-border bg-surface-2 px-2 py-1 text-center font-code text-[11px] font-semibold uppercase tracking-wider text-text-muted sm:w-[104px]">
           Local
         </span>
-        <input
-          type="text"
-          value={localEndpoint}
-          readonly
-          class="flex-1 font-mono text-sm bg-bg border border-border rounded-lg px-3 py-2 text-text-main selection:bg-brand-500/30"
-        />
-        <button
-          type="button"
-          onclick={() => copy(localEndpoint, 'local_url')}
-          class="p-2 hover:bg-surface-2 rounded-lg text-text-muted hover:text-brand-500 transition-colors shrink-0 cursor-pointer border border-border"
-          title="Copy Local URL"
-        >
-          {#if copiedId === 'local_url'}
-            <Check class="w-4 h-4 text-success" />
-          {:else}
-            <Copy class="w-4 h-4" />
-          {/if}
-        </button>
+        <div class="flex min-w-0 flex-1 items-center gap-2">
+          <input
+            type="text"
+            value={localEndpoint}
+            readonly
+            class="ui-input flex-1 font-code text-xs selection:bg-primary/25"
+          />
+          <button
+            type="button"
+            onclick={() => copy(localEndpoint, 'local_url')}
+            class="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-brand border border-border text-text-muted transition-colors hover:border-primary/50 hover:text-primary"
+            title="Copy Local URL"
+          >
+            {#if copiedId === 'local_url'}
+              <Check class="w-4 h-4 text-success" />
+            {:else}
+              <Copy class="w-4 h-4" />
+            {/if}
+          </button>
+        </div>
       </div>
 
       <!-- Tunnel (Cloudflare Quick Tunnel) -->
-      <div class="flex items-center gap-2">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
         <span
-          class="text-xs font-mono px-2 py-1 rounded shrink-0 min-w-[90px] text-center font-semibold border transition-colors {tunnelRunning && tunnelUrl
-            ? 'bg-brand-500/15 text-brand-500 border-brand-500/30'
-            : 'bg-surface-2 text-text-muted border-border'}"
+          class="w-full shrink-0 rounded-brand border px-2 py-1 text-center font-code text-[11px] font-semibold uppercase tracking-wider transition-colors sm:w-[104px] {tunnelRunning && tunnelUrl
+            ? 'border-primary/40 bg-primary/10 text-primary'
+            : 'border-border bg-surface-2 text-text-muted'}"
         >
           Tunnel
         </span>
 
+        <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
         {#if tunnelEnabled && !isTunnelLoading && tunnelReachable}
           <input
             type="text"
             value="{publicUrl || tunnelUrl}/v1"
             readonly
-            class="flex-1 font-mono text-sm bg-bg border border-border rounded-lg px-3 py-2 text-text-main selection:bg-brand-500/30"
+            class="ui-input min-w-[160px] flex-1 font-code text-xs selection:bg-primary/25"
           />
           <button
             type="button"
             onclick={() => copy(`${publicUrl || tunnelUrl}/v1`, 'tunnel_url')}
-            class="p-2 hover:bg-surface-2 rounded-lg text-text-muted hover:text-brand-500 transition-colors shrink-0 cursor-pointer border border-border"
+            class="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-brand border border-border text-text-muted transition-colors hover:border-primary/50 hover:text-primary"
             title="Copy Tunnel URL"
           >
             {#if copiedId === 'tunnel_url'}
@@ -538,52 +636,52 @@
           <button
             type="button"
             onclick={() => (showDisableTunnelModal = true)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-danger/20"
+            class="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-brand border border-danger/30 text-danger transition-colors hover:bg-danger/10"
             title="Disable Tunnel"
           >
             <Power class="w-4 h-4" />
           </button>
         {:else if tunnelEnabled && !isTunnelLoading && !tunnelReachable}
-          <div class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/5 text-sm text-amber-600 dark:text-amber-400">
-            <Loader2 class="w-4 h-4 animate-spin text-amber-500" />
+          <div class="flex min-w-[160px] flex-1 items-center gap-2 rounded-brand border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+            <Loader2 class="w-4 h-4 animate-spin shrink-0" />
             <span>{tunnelEverReachable ? 'Tunnel reconnecting...' : 'Tunnel checking...'}</span>
           </div>
           <button
             type="button"
             onclick={() => (showDisableTunnelModal = true)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-danger/20"
+            class="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-brand border border-danger/30 text-danger transition-colors hover:bg-danger/10"
             title="Disable Tunnel"
           >
             <Power class="w-4 h-4" />
           </button>
         {:else if isTunnelLoading}
-          <div class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-surface-2 text-sm text-text-muted">
-            <Loader2 class="w-4 h-4 animate-spin text-brand-500" />
+          <div class="flex min-w-[160px] flex-1 items-center gap-2 rounded-brand border border-border bg-surface-2 px-3 py-2 text-xs text-text-muted">
+            <Loader2 class="w-4 h-4 animate-spin text-primary shrink-0" />
             <span>{tunnelStatusText || 'Creating tunnel...'}</span>
           </div>
           <button
             type="button"
             onclick={() => (isTunnelLoading = false)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-border"
+            class="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-brand border border-border text-danger transition-colors hover:bg-danger/10"
             title="Cancel"
           >
             <Power class="w-4 h-4" />
           </button>
         {:else if tunnelError}
-          <div class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-danger/30 bg-danger/10 text-sm text-danger">
+          <div class="flex min-w-[160px] flex-1 items-center gap-2 rounded-brand border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
             <AlertCircle class="w-4 h-4 shrink-0" />
             <span class="truncate">{tunnelError}</span>
           </div>
           <button
             type="button"
             onclick={() => (showEnableTunnelModal = true)}
-            class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-semibold text-xs transition cursor-pointer shadow-sm"
+            class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-brand border border-primary/40 px-3 py-2 text-xs font-semibold text-primary transition-colors hover:bg-primary/10"
           >
             <CloudUpload class="w-3.5 h-3.5" />
             <span>Enable</span>
           </button>
         {:else}
-          <div class="flex-1 flex items-center px-3 py-2 text-sm text-text-muted font-mono bg-bg border border-border rounded-lg">
+          <div class="ui-input flex min-w-[160px] flex-1 items-center font-code text-xs text-text-muted">
             <span>Not connected</span>
           </div>
           <button
@@ -597,35 +695,37 @@
                 showEnableTunnelModal = true
               }
             }}
-            class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-semibold text-xs transition cursor-pointer shadow-sm"
+            class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-brand border border-primary/40 px-3 py-2 text-xs font-semibold text-primary transition-colors hover:bg-primary/10"
           >
             <CloudUpload class="w-3.5 h-3.5" />
             <span>Enable</span>
           </button>
         {/if}
+        </div>
       </div>
 
       <!-- Tailscale (Serve / Funnel) -->
-      <div class="flex items-center gap-2">
+      <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
         <span
-          class="text-xs font-mono px-2 py-1 rounded shrink-0 min-w-[90px] text-center font-semibold border transition-colors {tailscaleRunning && tailscaleUrl
-            ? 'bg-indigo-500/15 text-indigo-400 border-indigo-500/30'
-            : 'bg-surface-2 text-text-muted border-border'}"
+          class="w-full shrink-0 rounded-brand border px-2 py-1 text-center font-code text-[11px] font-semibold uppercase tracking-wider transition-colors sm:w-[104px] {tailscaleRunning && tailscaleUrl
+            ? 'border-info/40 bg-info/10 text-info'
+            : 'border-border bg-surface-2 text-text-muted'}"
         >
           Tailscale
         </span>
 
+        <div class="flex min-w-0 flex-1 flex-wrap items-center gap-2">
         {#if tailscaleEnabled && !isTailscaleLoading && tailscaleReachable}
           <input
             type="text"
             value="{tailscaleUrl}/v1"
             readonly
-            class="flex-1 font-mono text-sm bg-bg border border-border rounded-lg px-3 py-2 text-text-main selection:bg-indigo-500/30"
+            class="ui-input min-w-[160px] flex-1 font-code text-xs selection:bg-info/25"
           />
           <button
             type="button"
             onclick={() => copy(`${tailscaleUrl}/v1`, 'ts_url')}
-            class="p-2 hover:bg-surface-2 rounded-lg text-text-muted hover:text-indigo-400 transition-colors shrink-0 cursor-pointer border border-border"
+            class="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-brand border border-border text-text-muted transition-colors hover:border-info/50 hover:text-info"
             title="Copy Tailscale URL"
           >
             {#if copiedId === 'ts_url'}
@@ -637,62 +737,65 @@
           <button
             type="button"
             onclick={() => (showDisableTailscaleModal = true)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-danger/20"
+            class="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-brand border border-danger/30 text-danger transition-colors hover:bg-danger/10"
             title="Disable Tailscale"
           >
             <Power class="w-4 h-4" />
           </button>
         {:else if tailscaleEnabled && !isTailscaleLoading && !tailscaleReachable}
-          <div class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-amber-500/25 bg-amber-500/5 text-sm text-amber-600 dark:text-amber-400">
-            <Loader2 class="w-4 h-4 animate-spin text-amber-500" />
+          <div class="flex min-w-[160px] flex-1 items-center gap-2 rounded-brand border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+            <Loader2 class="w-4 h-4 animate-spin shrink-0" />
             <span>{tailscaleEverReachable ? 'Tailscale reconnecting...' : 'Tailscale checking...'}</span>
           </div>
           <button
             type="button"
             onclick={() => (showDisableTailscaleModal = true)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-danger/20"
+            class="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-brand border border-danger/30 text-danger transition-colors hover:bg-danger/10"
             title="Disable Tailscale"
           >
             <Power class="w-4 h-4" />
           </button>
         {:else if isTailscaleLoading}
-          <div class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-border bg-surface-2 text-sm text-text-muted">
-            <Loader2 class="w-4 h-4 animate-spin text-indigo-400" />
+          <div class="flex min-w-[160px] flex-1 items-center gap-2 rounded-brand border border-border bg-surface-2 px-3 py-2 text-xs text-text-muted">
+            <Loader2 class="w-4 h-4 animate-spin text-info shrink-0" />
             <span>{tailscaleStatusText || 'Connecting...'}</span>
           </div>
-          {#if tailscaleAuthUrl}
-            <button
-              type="button"
-              onclick={() => window.open(tailscaleAuthUrl, '_blank')}
-              class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs transition cursor-pointer"
-            >
-              <ExternalLink class="w-3.5 h-3.5" />
-              <span>Login</span>
-            </button>
-          {/if}
           <button
             type="button"
             onclick={() => (isTailscaleLoading = false)}
-            class="p-2 hover:bg-danger/10 rounded-lg text-danger transition-colors shrink-0 cursor-pointer border border-border"
+            class="flex size-10 shrink-0 cursor-pointer items-center justify-center rounded-brand border border-border text-danger transition-colors hover:bg-danger/10"
             title="Cancel"
           >
             <Power class="w-4 h-4" />
           </button>
+        {:else if tailscaleAuthUrl}
+          <div class="flex min-w-[160px] flex-1 items-center gap-2 rounded-brand border border-info/30 bg-info/10 px-3 py-2 text-xs text-info">
+            <ExternalLink class="w-4 h-4 shrink-0" />
+            <span>Login required to finish connecting Tailscale.</span>
+          </div>
+          <button
+            type="button"
+            onclick={() => window.open(tailscaleAuthUrl, '_blank')}
+            class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-brand border border-info/40 px-3 py-2 text-xs font-semibold text-info transition-colors hover:bg-info/10"
+          >
+            <ExternalLink class="w-3.5 h-3.5" />
+            <span>Login</span>
+          </button>
         {:else if tailscaleError}
-          <div class="flex-1 flex items-center gap-2 px-3 py-2 rounded-lg border border-danger/30 bg-danger/10 text-sm text-danger">
+          <div class="flex min-w-[160px] flex-1 items-center gap-2 rounded-brand border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger">
             <AlertCircle class="w-4 h-4 shrink-0" />
             <span class="truncate">{tailscaleError}</span>
           </div>
           <button
             type="button"
             onclick={handleTailscaleClick}
-            class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-semibold text-xs transition cursor-pointer shadow-sm"
+            class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-brand border border-info/40 px-3 py-2 text-xs font-semibold text-info transition-colors hover:bg-info/10"
           >
             <Shield class="w-3.5 h-3.5" />
             <span>Enable</span>
           </button>
         {:else}
-          <div class="flex-1 flex items-center px-3 py-2 text-sm text-text-muted font-mono bg-bg border border-border rounded-lg">
+          <div class="ui-input flex min-w-[160px] flex-1 items-center font-code text-xs text-text-muted">
             <span>Not connected</span>
           </div>
           <button
@@ -704,21 +807,22 @@
                 handleTailscaleClick()
               }
             }}
-            class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-semibold text-xs transition cursor-pointer shadow-sm"
+            class="flex shrink-0 cursor-pointer items-center gap-1.5 rounded-brand border border-info/40 px-3 py-2 text-xs font-semibold text-info transition-colors hover:bg-info/10"
           >
             <Shield class="w-3.5 h-3.5" />
             <span>Enable</span>
           </button>
         {/if}
+        </div>
       </div>
     </div>
 
     <!-- Pre-enable security gate banner (upstream isLoginUnsafe) -->
     {#if isLoginUnsafe && !tunnelEnabled && !tailscaleEnabled}
-      <div class="mt-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs">
-        <AlertTriangle class="w-4 h-4 shrink-0 text-amber-500" />
-        <p class="flex-1 leading-relaxed">{unsafeReason}</p>
-        <a href="/dashboard/profile" class="font-semibold underline hover:opacity-80 shrink-0">
+      <div class="mt-4 flex flex-wrap items-center gap-2 rounded-brand border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+        <AlertTriangle class="w-4 h-4 shrink-0" />
+        <p class="min-w-0 flex-1 leading-relaxed">{unsafeReason}</p>
+        <a href="/dashboard/profile" class="shrink-0 font-semibold underline hover:opacity-80">
           Open settings
         </a>
       </div>
@@ -728,29 +832,29 @@
     {#if (tunnelEnabled || tailscaleEnabled) && (!requireApiKey || isLoginUnsafe)}
       <div class="mt-4 flex flex-col gap-2">
         {#if !requireApiKey}
-          <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs">
-            <AlertTriangle class="w-4 h-4 shrink-0 text-amber-500" />
-            <p class="flex-1 leading-relaxed">
+          <div class="flex flex-wrap items-center gap-2 rounded-brand border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+            <AlertTriangle class="w-4 h-4 shrink-0" />
+            <p class="min-w-0 flex-1 leading-relaxed">
               Require API key is disabled — your endpoint is publicly accessible without authentication.
             </p>
             <button
               type="button"
               onclick={() => toggleRequireApiKey(true)}
-              class="font-semibold underline hover:opacity-80 shrink-0 cursor-pointer"
+              class="shrink-0 cursor-pointer font-semibold underline hover:opacity-80"
             >
               Enable
             </button>
           </div>
         {/if}
         {#if isLoginUnsafe}
-          <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs">
-            <AlertTriangle class="w-4 h-4 shrink-0 text-amber-500" />
-            <p class="flex-1 leading-relaxed">
+          <div class="flex flex-wrap items-center gap-2 rounded-brand border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+            <AlertTriangle class="w-4 h-4 shrink-0" />
+            <p class="min-w-0 flex-1 leading-relaxed">
               {!requireLogin
                 ? 'Require login is disabled — anyone can access your dashboard via tunnel.'
                 : 'Dashboard uses the default password — change it in Profile settings.'}
             </p>
-            <a href="/dashboard/profile" class="font-semibold underline hover:opacity-80 shrink-0">
+            <a href="/dashboard/profile" class="shrink-0 font-semibold underline hover:opacity-80">
               {!requireLogin ? 'Enable' : 'Change password'}
             </a>
           </div>
@@ -760,10 +864,10 @@
 
     <!-- Allow dashboard access via tunnel toggle -->
     {#if tunnelRunning || tailscaleRunning}
-      <div class="mt-4 pt-4 border-t border-border flex items-center justify-between">
-        <div class="space-y-0.5 pr-4">
-          <p class="font-medium text-sm text-text-main">Allow dashboard access via tunnel</p>
-          <p class="text-xs text-text-muted leading-relaxed">
+      <div class="mt-4 flex items-start justify-between gap-4 border-t border-border-subtle pt-4">
+        <div class="min-w-0 space-y-0.5">
+          <p class="text-sm font-medium text-text-main">Allow dashboard access via tunnel</p>
+          <p class="text-xs leading-relaxed text-text-muted">
             When enabled, the dashboard can be accessed through your tunnel or Tailscale URL (login still required).
           </p>
         </div>
@@ -773,40 +877,43 @@
           onChange={toggleTunnelDashboardAccess}
         />
       </div>
+      {#if tunnelDashboardAccessError}
+        <p class="mt-2 text-xs text-danger" role="alert">
+          Could not update tunnel dashboard access — {tunnelDashboardAccessError}
+        </p>
+      {/if}
     {/if}
   </Card>
 
   <!-- BOTTOM SECTION: API Keys Card -->
   <Card padding="md" class="space-y-4">
     <!-- Header with Create Key button -->
-    <div class="flex items-center justify-between">
-      <div class="flex items-center gap-2">
-        <div class="p-2 rounded-lg bg-brand-500/10 text-brand-500">
+    <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div class="flex min-w-0 items-start gap-3">
+        <div class="flex size-9 shrink-0 items-center justify-center rounded-brand border border-border-subtle bg-surface-2 text-primary">
           <Key class="w-5 h-5" />
         </div>
-        <div>
-          <h2 class="text-lg font-semibold text-text-main flex items-center gap-2">
+        <div class="min-w-0">
+          <span class="ui-kicker">II · Access</span>
+          <h2 class="mt-1 font-headline text-lg font-medium leading-tight text-text-main">
             API Keys
           </h2>
-          <p class="text-xs text-text-muted">Manage Bearer tokens for clients connecting to this endpoint</p>
+          <p class="mt-0.5 text-xs leading-relaxed text-text-muted">
+            Manage Bearer tokens for clients connecting to this endpoint
+          </p>
         </div>
       </div>
 
-      <button
-        type="button"
-        onclick={() => (isCreateKeyOpen = true)}
-        class="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-semibold text-xs shadow-md shadow-brand-500/20 transition cursor-pointer"
-      >
-        <Plus class="w-4 h-4" />
-        <span>Create Key</span>
-      </button>
+      <Button size="sm" icon="add" onclick={() => (isCreateKeyOpen = true)} class="w-full sm:w-auto">
+        Create Key
+      </Button>
     </div>
 
     <!-- Master Switch: Require API key -->
-    <div class="flex items-center justify-between pb-4 pt-2 border-b border-border">
-      <div class="space-y-0.5 pr-4">
-        <p class="font-medium text-sm text-text-main">Require API key</p>
-        <p class="text-xs text-text-muted">Requests without a valid key will be rejected</p>
+    <div class="flex items-start justify-between gap-4 border-b border-border-subtle pb-4 pt-2">
+      <div class="min-w-0 space-y-0.5">
+        <p class="text-sm font-medium text-text-main">Require API key</p>
+        <p class="text-xs leading-relaxed text-text-muted">Requests without a valid key will be rejected</p>
       </div>
       <Toggle
         checked={requireApiKey}
@@ -815,43 +922,46 @@
       />
     </div>
 
+      {#if endpointSettingsError}
+        <p class="text-xs text-danger" role="alert">
+          Could not update API key requirement — {endpointSettingsError}
+        </p>
+      {/if}
+
     <!-- Warning if disabled -->
     {#if !requireApiKey}
-      <div class="flex items-center gap-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-700 dark:text-amber-400 text-xs">
-        <AlertTriangle class="w-4 h-4 shrink-0 text-amber-500" />
-        <span>Endpoint is exposed without an API key. Anyone who can reach this host can make requests.</span>
+      <div class="flex items-start gap-2 rounded-brand border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning">
+        <AlertTriangle class="w-4 h-4 shrink-0" />
+        <span class="leading-relaxed">Endpoint is exposed without an API key. Anyone who can reach this host can make requests.</span>
       </div>
     {/if}
 
     <!-- Keys List / Table -->
     {#if localKeys.length === 0}
-      <div class="text-center py-12 space-y-3">
-        <div class="inline-flex items-center justify-center w-14 h-14 rounded-full bg-brand-500/10 text-brand-500">
-          <Key class="w-7 h-7" />
+      <div class="ui-empty flex flex-col items-center gap-3 text-center">
+        <div class="flex size-12 items-center justify-center rounded-full border border-border-subtle bg-surface text-primary">
+          <Key class="w-6 h-6" />
         </div>
         <div class="space-y-1">
-          <p class="text-text-main font-medium text-sm">No API keys yet</p>
-          <p class="text-xs text-text-muted">Create your first API key to get started</p>
+          <p class="font-headline text-base font-medium text-text-main">No API keys yet</p>
+          <p class="text-xs leading-relaxed text-text-muted">
+            Create your first key so clients can authenticate against this endpoint.
+          </p>
         </div>
-        <button
-          type="button"
-          onclick={() => (isCreateKeyOpen = true)}
-          class="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-semibold text-xs shadow-sm transition cursor-pointer"
-        >
-          <Plus class="w-4 h-4" />
-          <span>Create Key</span>
-        </button>
+        <Button size="sm" icon="add" onclick={() => (isCreateKeyOpen = true)}>
+          Create Key
+        </Button>
       </div>
     {:else}
-      <div class="flex flex-col divide-y divide-border/40">
+      <ul class="flex flex-col divide-y divide-border-subtle">
         {#each localKeys as key (key.id)}
           {@const isShown = shownKeyIds.has(key.id)}
           {@const isActive = key.isActive === 1 || key.isActive === true}
-          <div class="group flex items-center justify-between py-3.5 transition {isActive ? '' : 'opacity-60'}">
-            <div class="flex-1 min-w-0 pr-4">
+          <li class="group flex flex-col gap-3 py-3.5 transition-opacity sm:flex-row sm:items-center sm:justify-between {isActive ? '' : 'opacity-60'}">
+            <div class="min-w-0 flex-1 sm:pr-4">
               <p class="text-sm font-semibold text-text-main">{key.name || 'Default Key'}</p>
-              <div class="flex items-center gap-2 mt-1">
-                <code class="text-xs text-text-muted font-mono bg-surface-2 px-2 py-0.5 rounded border border-border/50 select-all">
+              <div class="mt-1 flex min-w-0 flex-wrap items-center gap-2">
+                <code class="ui-code min-w-0 px-2 py-0.5 text-[11px] select-all">
                   {isShown ? key.key : maskKey(key.key)}
                 </code>
 
@@ -859,7 +969,7 @@
                 <button
                   type="button"
                   onclick={() => toggleShowKey(key.id)}
-                  class="p-1 hover:bg-surface-2 rounded text-text-muted hover:text-text-main transition-colors cursor-pointer"
+                  class="cursor-pointer rounded-brand p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-text-main"
                   title={isShown ? 'Hide key' : 'Show key'}
                 >
                   {#if isShown}
@@ -873,7 +983,7 @@
                 <button
                   type="button"
                   onclick={() => copy(key.key, key.id)}
-                  class="p-1 hover:bg-surface-2 rounded text-text-muted hover:text-brand-500 transition-colors cursor-pointer"
+                  class="cursor-pointer rounded-brand p-1.5 text-text-muted transition-colors hover:bg-surface-2 hover:text-primary"
                   title="Copy key"
                 >
                   {#if copiedId === key.id}
@@ -884,16 +994,16 @@
                 </button>
               </div>
 
-              <div class="flex items-center gap-2 mt-1.5 text-xs text-text-subtle">
+              <div class="mt-1.5 flex flex-wrap items-center gap-2 text-[11px] text-text-subtle">
                 <span>Created {key.createdAt ? new Date(key.createdAt).toLocaleDateString() : '—'}</span>
                 {#if !isActive}
-                  <span>•</span>
-                  <span class="text-amber-500 font-medium">Paused</span>
+                  <span aria-hidden="true">•</span>
+                  <span class="font-medium text-warning">Paused</span>
                 {/if}
               </div>
             </div>
 
-            <div class="flex items-center gap-3 shrink-0">
+            <div class="flex shrink-0 items-center gap-3">
               <!-- Active Switch -->
               <Toggle
                 checked={isActive}
@@ -907,359 +1017,184 @@
               <button
                 type="button"
                 onclick={() => handleDeleteKey(key)}
-                class="p-2 hover:bg-danger/10 rounded-lg text-text-subtle hover:text-danger opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-all cursor-pointer"
+                class="cursor-pointer rounded-brand p-2 text-text-subtle transition-all hover:bg-danger/10 hover:text-danger sm:opacity-0 sm:group-hover:opacity-100 sm:focus-visible:opacity-100"
                 title="Delete key"
               >
                 <Trash2 class="w-4 h-4" />
               </button>
             </div>
-          </div>
+          </li>
         {/each}
-      </div>
+      </ul>
     {/if}
   </Card>
 </div>
 
 <!-- MODAL: Create API Key -->
-{#if isCreateKeyOpen}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-    <div class="w-full max-w-md p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
-      <div class="flex items-center justify-between pb-3 border-b border-border">
-        <h3 class="text-base font-bold text-text-main">Create API Key</h3>
-        <button
-          type="button"
-          onclick={() => {
-            isCreateKeyOpen = false
-            newKeyName = ''
-          }}
-          class="text-text-muted hover:text-text-main cursor-pointer"
-        >
-          <X class="w-4 h-4" />
-        </button>
-      </div>
-
-      <form onsubmit={handleCreateKey} class="space-y-4">
-        <div class="space-y-1">
-          <label for="key-name-input" class="block text-xs font-semibold text-text-muted">
-            Key Name
-          </label>
-          <input
-            id="key-name-input"
-            type="text"
-            bind:value={newKeyName}
-            placeholder="Production Key"
-            class="w-full px-3 py-2 rounded-lg bg-bg border border-border text-sm text-text-main focus:outline-none focus:border-brand-500"
-          />
-        </div>
-
-        <div class="flex gap-2 pt-2">
-          <button
-            type="submit"
-            disabled={!newKeyName.trim() || isSubmittingKey}
-            class="flex-1 py-2 px-4 rounded-lg bg-brand-500 hover:bg-brand-600 disabled:opacity-50 text-white font-semibold text-xs transition cursor-pointer flex items-center justify-center gap-1.5"
-          >
-            {#if isSubmittingKey}
-              <Loader2 class="w-3.5 h-3.5 animate-spin" />
-              <span>Creating...</span>
-            {:else}
-              <span>Create</span>
-            {/if}
-          </button>
-          <button
-            type="button"
-            onclick={() => {
-              isCreateKeyOpen = false
-              newKeyName = ''
-            }}
-            class="flex-1 py-2 px-4 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-semibold text-xs transition cursor-pointer border border-border"
-          >
-            Cancel
-          </button>
-        </div>
-      </form>
+<Modal isOpen={isCreateKeyOpen} title="Create API Key" size="md" onClose={closeCreateKeyModal}>
+  <form onsubmit={handleCreateKey} class="space-y-4">
+    <div class="space-y-1.5">
+      <label for="key-name-input" class="ui-kicker">Key name</label>
+      <input
+        id="key-name-input"
+        type="text"
+        bind:value={newKeyName}
+        placeholder="Production Key"
+        class="ui-input w-full text-sm"
+      />
+      <p class="text-xs leading-relaxed text-text-subtle">
+        Only a label — clients authenticate with the key value, never the name.
+      </p>
     </div>
-  </div>
-{/if}
+
+    <div class="flex flex-col gap-2 pt-2 sm:flex-row">
+      <Button
+        type="submit"
+        disabled={!newKeyName.trim()}
+        loading={isSubmittingKey}
+        class="flex-1"
+      >
+        Create
+      </Button>
+      <Button variant="secondary" onclick={closeCreateKeyModal} class="flex-1">
+        Cancel
+      </Button>
+    </div>
+  </form>
+</Modal>
 
 <!-- MODAL: API Key Created -->
-{#if newlyCreatedKey}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-    <div class="w-full max-w-md p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
-      <div class="flex items-center justify-between pb-3 border-b border-border">
-        <h3 class="text-base font-bold text-text-main">API Key Created</h3>
-      </div>
-
-      <div class="bg-amber-500/10 border border-amber-500/20 rounded-xl p-4 space-y-1 text-amber-700 dark:text-amber-300">
-        <p class="text-sm font-bold">Save this key now!</p>
-        <p class="text-xs leading-relaxed">
-          This is the only time you will see this key. Store it securely.
-        </p>
-      </div>
-
-      <div class="flex items-center gap-2">
-        <input
-          type="text"
-          value={newlyCreatedKey}
-          readonly
-          class="flex-1 font-mono text-xs bg-bg border border-border rounded-lg px-3 py-2 text-text-main select-all"
-        />
-        <button
-          type="button"
-          onclick={() => copy(newlyCreatedKey || '', 'created_key')}
-          class="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-surface-2 hover:bg-surface-3 border border-border text-xs font-semibold text-text-main cursor-pointer"
-        >
-          {#if copiedId === 'created_key'}
-            <Check class="w-3.5 h-3.5 text-success" />
-            <span>Copied!</span>
-          {:else}
-            <Copy class="w-3.5 h-3.5" />
-            <span>Copy</span>
-          {/if}
-        </button>
-      </div>
-
-      <div class="pt-2">
-        <button
-          type="button"
-          onclick={() => (newlyCreatedKey = null)}
-          class="w-full py-2 px-4 rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-semibold text-xs transition cursor-pointer"
-        >
-          Done
-        </button>
-      </div>
+<Modal isOpen={!!newlyCreatedKey} title="API Key Created" size="md" onClose={() => (newlyCreatedKey = null)}>
+  <div class="space-y-4">
+    <div class="space-y-1 rounded-brand border border-warning/30 bg-warning/10 p-4 text-warning">
+      <p class="text-sm font-bold">Save this key now</p>
+      <p class="text-xs leading-relaxed">
+        This is the only time you will see this key. Store it securely.
+      </p>
     </div>
+
+    <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
+      <input
+        type="text"
+        value={newlyCreatedKey}
+        readonly
+        class="ui-input min-w-0 flex-1 font-code text-xs select-all"
+      />
+      <Button
+        variant="secondary"
+        size="sm"
+        onclick={() => copy(newlyCreatedKey || '', 'created_key')}
+        class="shrink-0"
+      >
+        {#if copiedId === 'created_key'}
+          <Check class="w-3.5 h-3.5 text-success" />
+          <span>Copied</span>
+        {:else}
+          <Copy class="w-3.5 h-3.5" />
+          <span>Copy</span>
+        {/if}
+      </Button>
+    </div>
+
+    <Button fullWidth onclick={() => (newlyCreatedKey = null)}>Done</Button>
   </div>
-{/if}
+</Modal>
 
 <!-- MODAL: Confirmation (Delete / Pause) -->
-{#if confirmModal}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-    <div class="w-full max-w-md p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
-      <div class="flex items-center justify-between pb-2 border-b border-border">
-        <h3 class="text-base font-bold text-text-main">{confirmModal.title}</h3>
-        <button
-          type="button"
-          onclick={() => (confirmModal = null)}
-          class="text-text-muted hover:text-text-main cursor-pointer"
-        >
-          <X class="w-4 h-4" />
-        </button>
-      </div>
-
-      <p class="text-sm text-text-muted leading-relaxed">
-        {confirmModal.message}
-      </p>
-
-      <div class="flex gap-2 pt-2">
-        <button
-          type="button"
-          onclick={confirmModal.onConfirm}
-          class="flex-1 py-2 px-4 rounded-lg text-white font-semibold text-xs transition cursor-pointer {confirmModal.isDanger
-            ? 'bg-danger hover:bg-danger/90'
-            : 'bg-brand-500 hover:bg-brand-600'}"
-        >
-          {confirmModal.confirmLabel || 'Confirm'}
-        </button>
-        <button
-          type="button"
-          onclick={() => (confirmModal = null)}
-          class="flex-1 py-2 px-4 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-semibold text-xs transition cursor-pointer border border-border"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
+<ConfirmModal
+  isOpen={!!confirmModal}
+  title={confirmModal?.title || 'Confirm'}
+  message={confirmModal?.message || ''}
+  confirmText={confirmModal?.confirmLabel || 'Confirm'}
+  variant={confirmModal?.isDanger ? 'danger' : 'primary'}
+  onClose={() => (confirmModal = null)}
+  onConfirm={() => confirmModal?.onConfirm()}
+/>
 
 <!-- MODAL: Enable Cloudflare Tunnel -->
-{#if showEnableTunnelModal}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-    <div class="w-full max-w-lg p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
-      <div class="flex items-center justify-between pb-2 border-b border-border">
-        <h3 class="text-base font-bold text-text-main">Enable Tunnel</h3>
-        <button
-          type="button"
-          onclick={() => (showEnableTunnelModal = false)}
-          class="text-text-muted hover:text-text-main cursor-pointer"
-        >
-          <X class="w-4 h-4" />
-        </button>
-      </div>
-
-      <!-- Cloudflare Tunnel Info Box -->
-      <div class="bg-surface-2 border border-border rounded-xl p-4 flex items-start gap-3">
-        <CloudUpload class="w-5 h-5 text-brand-500 shrink-0 mt-0.5" />
-        <div class="space-y-1 text-xs">
-          <p class="font-bold text-text-main">Cloudflare Quick Tunnel</p>
-          <p class="text-text-muted leading-relaxed">
-            Expose your local 9router-go to the internet. No port forwarding, no static IP needed. Share endpoint URL with your team or use it in Cursor, Cline, and other AI tools from anywhere.
-          </p>
-        </div>
-      </div>
-
-      <!-- Feature Grid -->
-      <div class="grid grid-cols-2 gap-2.5">
-        {#each tunnelValueProps as prop (prop.title)}
-          <div class="p-3 rounded-xl bg-surface-2/60 border border-border/50 text-center space-y-1">
-            <p class="text-xs font-bold text-text-main">{prop.title}</p>
-            <p class="text-[11px] text-text-muted">{prop.desc}</p>
-          </div>
-        {/each}
-      </div>
-
-      <p class="text-xs text-text-subtle">
-        Requires outbound port 7844 (TCP/UDP). Connection may take 10-30s.
-      </p>
-
-      <div class="flex gap-2 pt-2">
-        <button
-          type="button"
-          onclick={startTunnel}
-          class="flex-1 py-2 px-4 rounded-lg bg-brand-500 hover:bg-brand-600 text-white font-semibold text-xs transition cursor-pointer shadow-sm"
-        >
-          Start Tunnel
-        </button>
-        <button
-          type="button"
-          onclick={() => (showEnableTunnelModal = false)}
-          class="flex-1 py-2 px-4 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-semibold text-xs transition cursor-pointer border border-border"
-        >
-          Cancel
-        </button>
+<Modal isOpen={showEnableTunnelModal} title="Enable Tunnel" size="lg" onClose={() => (showEnableTunnelModal = false)}>
+  <div class="space-y-4">
+    <!-- Cloudflare Tunnel Info Box -->
+    <div class="flex items-start gap-3 rounded-brand border border-border-subtle bg-surface-2 p-4">
+      <CloudUpload class="w-5 h-5 text-primary shrink-0 mt-0.5" />
+      <div class="space-y-1 text-xs">
+        <p class="font-bold text-text-main">Cloudflare Quick Tunnel</p>
+        <p class="leading-relaxed text-text-muted">
+          Expose your local 9router-go to the internet. No port forwarding, no static IP needed. Share endpoint URL with your team or use it in Cursor, Cline, and other AI tools from anywhere.
+        </p>
       </div>
     </div>
+
+    <!-- Feature Grid -->
+    <div class="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+      {#each tunnelValueProps as prop (prop.title)}
+        <div class="space-y-1 rounded-brand border border-border-subtle bg-surface-2/60 p-3 text-center">
+          <p class="text-xs font-bold text-text-main">{prop.title}</p>
+          <p class="text-[11px] text-text-muted">{prop.desc}</p>
+        </div>
+      {/each}
+    </div>
+
+    <p class="text-xs text-text-subtle">
+      Requires outbound port 7844 (TCP/UDP). Connection may take 10-30s.
+    </p>
+
+    <div class="flex flex-col gap-2 pt-2 sm:flex-row">
+      <Button onclick={startTunnel} class="flex-1">Start Tunnel</Button>
+      <Button variant="secondary" onclick={() => (showEnableTunnelModal = false)} class="flex-1">
+        Cancel
+      </Button>
+    </div>
   </div>
-{/if}
+</Modal>
 
 <!-- MODAL: Disable Cloudflare Tunnel -->
-{#if showDisableTunnelModal}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-    <div class="w-full max-w-md p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
-      <div class="flex items-center justify-between pb-2 border-b border-border">
-        <h3 class="text-base font-bold text-text-main">Disable Tunnel</h3>
-        <button
-          type="button"
-          onclick={() => (showDisableTunnelModal = false)}
-          class="text-text-muted hover:text-text-main cursor-pointer"
-        >
-          <X class="w-4 h-4" />
-        </button>
-      </div>
-
-      <p class="text-sm text-text-muted leading-relaxed">
-        The Cloudflare tunnel will be disconnected. Remote access via tunnel URL will stop working.
-      </p>
-
-      <div class="flex gap-2 pt-2">
-        <button
-          type="button"
-          onclick={stopTunnel}
-          class="flex-1 py-2 px-4 rounded-lg bg-danger hover:bg-danger/90 text-white font-semibold text-xs transition cursor-pointer"
-        >
-          Disable Tunnel
-        </button>
-        <button
-          type="button"
-          onclick={() => (showDisableTunnelModal = false)}
-          class="flex-1 py-2 px-4 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-semibold text-xs transition cursor-pointer border border-border"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
+<ConfirmModal
+  isOpen={showDisableTunnelModal}
+  title="Disable Tunnel"
+  message="The Cloudflare tunnel will be disconnected. Remote access via tunnel URL will stop working."
+  confirmText="Disable Tunnel"
+  variant="danger"
+  onClose={() => (showDisableTunnelModal = false)}
+  onConfirm={stopTunnel}
+/>
 
 <!-- MODAL: Tailscale Funnel -->
-{#if showTailscaleModal}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-    <div class="w-full max-w-md p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
-      <div class="flex items-center justify-between pb-2 border-b border-border">
-        <h3 class="text-base font-bold text-text-main">Tailscale Funnel</h3>
-        <button
-          type="button"
-          onclick={() => (showTailscaleModal = false)}
-          class="text-text-muted hover:text-text-main cursor-pointer"
-        >
-          <X class="w-4 h-4" />
-        </button>
+<Modal isOpen={showTailscaleModal} title="Tailscale Funnel" size="md" onClose={() => (showTailscaleModal = false)}>
+  <div class="space-y-4">
+    {#if tailscaleInstalled === false}
+      <div class="space-y-3">
+        <p class="text-sm leading-relaxed text-text-muted">
+          Tailscale CLI is not installed or detected on your system path. Install Tailscale to enable Funnel.
+        </p>
+        <div class="ui-code px-3 py-2 text-xs select-all">
+          curl -fsSL https://tailscale.com/install.sh | sh
+        </div>
       </div>
+    {:else}
+      <p class="text-sm leading-relaxed text-text-muted">
+        Tailscale is installed. Click Connect to expose your 9router-go via Tailscale Funnel.
+      </p>
+    {/if}
 
-      {#if tailscaleInstalled === false}
-        <div class="space-y-3">
-          <p class="text-sm text-text-muted leading-relaxed">
-            Tailscale CLI is not installed or detected on your system path. Install Tailscale to enable Funnel.
-          </p>
-          <div class="p-3 rounded-lg bg-surface-2 border border-border font-mono text-xs text-text-main select-all">
-            curl -fsSL https://tailscale.com/install.sh | sh
-          </div>
-        </div>
-      {:else}
-        <div class="space-y-3">
-          <p class="text-sm text-text-muted leading-relaxed">
-            Tailscale is installed. Click Connect to expose your 9router-go via Tailscale Funnel.
-          </p>
-        </div>
+    <div class="flex flex-col gap-2 pt-2 sm:flex-row">
+      {#if tailscaleInstalled}
+        <Button onclick={startTailscale} class="flex-1">Connect</Button>
       {/if}
-
-      <div class="flex gap-2 pt-2">
-        {#if tailscaleInstalled}
-          <button
-            type="button"
-            onclick={startTailscale}
-            class="flex-1 py-2 px-4 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white font-semibold text-xs transition cursor-pointer"
-          >
-            Connect
-          </button>
-        {/if}
-        <button
-          type="button"
-          onclick={() => (showTailscaleModal = false)}
-          class="flex-1 py-2 px-4 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-semibold text-xs transition cursor-pointer border border-border"
-        >
-          Cancel
-        </button>
-      </div>
+      <Button variant="secondary" onclick={() => (showTailscaleModal = false)} class="flex-1">
+        Cancel
+      </Button>
     </div>
   </div>
-{/if}
+</Modal>
 
 <!-- MODAL: Disable Tailscale -->
-{#if showDisableTailscaleModal}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-    <div class="w-full max-w-md p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-4">
-      <div class="flex items-center justify-between pb-2 border-b border-border">
-        <h3 class="text-base font-bold text-text-main">Disable Tailscale</h3>
-        <button
-          type="button"
-          onclick={() => (showDisableTailscaleModal = false)}
-          class="text-text-muted hover:text-text-main cursor-pointer"
-        >
-          <X class="w-4 h-4" />
-        </button>
-      </div>
-
-      <p class="text-sm text-text-muted leading-relaxed">
-        Tailscale Funnel will be stopped. Remote access via Tailscale URL will stop working.
-      </p>
-
-      <div class="flex gap-2 pt-2">
-        <button
-          type="button"
-          onclick={stopTailscale}
-          class="flex-1 py-2 px-4 rounded-lg bg-danger hover:bg-danger/90 text-white font-semibold text-xs transition cursor-pointer"
-        >
-          Disable Tailscale
-        </button>
-        <button
-          type="button"
-          onclick={() => (showDisableTailscaleModal = false)}
-          class="flex-1 py-2 px-4 rounded-lg bg-surface-2 hover:bg-surface-3 text-text-main font-semibold text-xs transition cursor-pointer border border-border"
-        >
-          Cancel
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
+<ConfirmModal
+  isOpen={showDisableTailscaleModal}
+  title="Disable Tailscale"
+  message="Tailscale Funnel will be stopped. Remote access via Tailscale URL will stop working."
+  confirmText="Disable Tailscale"
+  variant="danger"
+  onClose={() => (showDisableTailscaleModal = false)}
+  onConfirm={stopTailscale}
+/>

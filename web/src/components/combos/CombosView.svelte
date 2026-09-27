@@ -1,5 +1,4 @@
 <script lang="ts">
-  import { Layers } from 'lucide-svelte'
   import { api, type Combo, type ProviderConnection, type ProviderNode } from '../../api/client'
   import {
     clearJudgeModel,
@@ -11,7 +10,8 @@
     type ComboStrategyInfo
   } from './types'
   import Button from '../../lib/ui/Button.svelte'
-  import Card from '../../lib/ui/Card.svelte'
+  import EmptyState from '../../lib/ui/EmptyState.svelte'
+  import Section from '../../lib/ui/Section.svelte'
   import ComboCard from './ComboCard.svelte'
   import CombosHeader from './CombosHeader.svelte'
   import CreateComboModal from './CreateComboModal.svelte'
@@ -54,7 +54,6 @@
   let editingCombo = $state<Combo | null>(null)
   let modalModels = $state<string[]>([])
   let isSavingCombo = $state(false)
-  let modalNameResetKey = $state(0)
 
   // Model Picker Modal state
   let showModelPicker = $state(false)
@@ -78,12 +77,6 @@
   }
 
   $effect(() => { loadSettings() })
-  $effect(() => {
-    if (isCreatingOpen && !editingCombo) {
-      modalModels = []
-      modalNameResetKey += 1
-    }
-  })
 
   function copyName(name: string, id: string) {
     navigator.clipboard.writeText(name)
@@ -140,7 +133,10 @@
     isCreatingOpen = true
   }
   function openEditModal(combo: Combo) {
-    editingCombo = combo
+    editingCombo = {
+      ...combo,
+      strategy: comboStrategies[combo.name]?.fallbackStrategy || combo.strategy,
+    }
     modalModels = [...getComboModels(combo)]
     isCreatingOpen = true
   }
@@ -150,13 +146,16 @@
     modalModels = []
   }
 
-  async function handleSaveCombo(name: string, models: string[]) {
+  async function handleSaveCombo(name: string, models: string[], strategy: string) {
     isSavingCombo = true
     try {
       if (editingCombo) {
-        await api.updateCombo(editingCombo.id, { name, models })
+        await api.updateCombo(editingCombo.id, { name, models, strategy })
+        const updated = updateComboStrategy(comboStrategies, editingCombo.name, strategy)
+        comboStrategies = updated
+        await api.patchSettings({ comboStrategies: updated })
       } else {
-        await api.createCombo({ name, models, strategy: 'fallback' })
+        await api.createCombo({ name, models, strategy })
       }
       closeModal()
       onRefresh()
@@ -230,25 +229,14 @@
 
 </script>
 
-<div class="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+<div class="flex min-w-0 flex-col gap-10">
   <CombosHeader onCreateClick={openCreateModal} />
 
-  <!-- Combos List -->
+  <Section index="I" title="Model routes" description="One name, an ordered chain of models.">
   {#if llmCombos.length === 0}
-    <Card>
-      <div class="text-center py-12">
-        <div class="inline-flex items-center justify-center w-16 h-16 rounded-full bg-brand-500/10 text-brand-500 mb-4">
-          <Layers class="w-8 h-8" />
-        </div>
-        <p class="text-text-main font-medium mb-1">No combos yet</p>
-        <p class="text-sm text-text-muted mb-4">Create model combos with fallback support</p>
-        <Button icon="add" onclick={openCreateModal} class="w-full sm:w-auto">
-          Create Combo
-        </Button>
-      </div>
-    </Card>
+    <EmptyState icon="combos" title="No routes yet" description="Create a combo to give clients one model name with fallback options." />
   {:else}
-    <div class="flex flex-col gap-4">
+    <div class="divide-y divide-border-subtle border-y border-border-subtle">
       {#each llmCombos as combo (combo.id)}
         <ComboCard
           {combo}
@@ -264,17 +252,19 @@
       {/each}
     </div>
   {/if}
+  </Section>
 
-  <!-- Vision / Audio Adapter Section -->
+  <Section index="II" title="Capability adapters" description="Route image and audio input through compatible models.">
   <CapacityAdapterSection
     {capacityAdapter}
     onSaveAdapter={saveCapacityAdapter}
     onOpenModelPicker={openModelPicker}
   />
+  </Section>
 </div>
 
 <!-- Create / Edit Combo Modal (key forces remount = upstream remount reset) -->
-{#key editingCombo?.id || modalNameResetKey}
+{#key editingCombo?.id || 'create'}
   <CreateComboModal
     isOpen={isCreatingOpen}
     {editingCombo}

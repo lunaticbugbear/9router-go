@@ -336,6 +336,15 @@ func (h *ChatHandler) HandleChangelog(w http.ResponseWriter, r *http.Request) {
 
 // HandleToggleAutoUpdate enables or disables automatic updates in settings and runtime.
 func (h *ChatHandler) HandleToggleAutoUpdate(w http.ResponseWriter, r *http.Request) {
+	if !updater.HasUpdateSource() {
+		updater.SetAutoUpdate(false)
+		handlerutil.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"success":           false,
+			"autoUpdateEnabled": false,
+			"message":           "Automatic updates are disabled for this build.",
+		})
+		return
+	}
 	var body struct {
 		Enabled bool `json:"enabled"`
 	}
@@ -369,15 +378,28 @@ func (h *ChatHandler) HandleCheckUpdate(w http.ResponseWriter, r *http.Request) 
 
 // HandleTriggerUpdate performs immediate self-updating if an update is available and restarts gracefully.
 func (h *ChatHandler) HandleTriggerUpdate(w http.ResponseWriter, r *http.Request) {
+	if !updater.HasUpdateSource() {
+		handlerutil.WriteJSON(w, http.StatusServiceUnavailable, map[string]any{
+			"status":  "disabled",
+			"message": "Self-update is disabled for this build.",
+		})
+		return
+	}
 	info, err := updater.CheckUpdate(r.Context())
 	if err != nil {
 		handlerutil.WriteJSONError(w, http.StatusBadGateway, fmt.Sprintf("check update failed: %v", err))
 		return
 	}
 	if !info.HasUpdate {
+		status := "up_to_date"
+		message := "9router-go is already on the latest version"
+		if info.Source == "disabled" {
+			status = "disabled"
+			message = "No release source is configured for this build."
+		}
 		handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
-			"status":  "up_to_date",
-			"message": "9router-go is already on the latest version",
+			"status":  status,
+			"message": message,
 			"version": info.CurrentVersion,
 		})
 		return

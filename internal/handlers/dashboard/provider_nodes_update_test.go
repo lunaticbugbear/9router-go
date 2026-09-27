@@ -178,6 +178,45 @@ func TestHandleGetConnectionModels_CompatibleProbe(t *testing.T) {
 	}
 }
 
+func TestHandleGetConnectionModels_CustomNodeID(t *testing.T) {
+	repo, cleanup := setupNodeTestDB(t)
+	defer cleanup()
+	router := setupTestRouter(repo)
+
+	if _, err := repo.CreateProviderNode("shiteru", "openai", "Shiteru", `{"prefix":"shiteru","apiType":"openai","baseUrl":"https://shiteru.example/v1"}`); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	if _, err := repo.RawDB().Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('conn-shiteru', 'shiteru', 'apikey', 'Live', 1, 1, '{"apiKey":"sk-test","providerSpecificData":{"baseUrl":"https://shiteru.example/v1/chat/completions"}}', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("seed connection: %v", err)
+	}
+
+	calls := withProbeStub(t, func(_ int, probe capturedProbe) (int, []byte, error) {
+		if probe.url != "https://shiteru.example/v1/models" {
+			t.Errorf("unexpected probe url %q", probe.url)
+		}
+		if probe.headers.Get("Authorization") != "Bearer sk-test" {
+			t.Errorf("unexpected auth header")
+		}
+		return http.StatusOK, []byte(`{"data":[{"id":"shiteru-model"}]}`), nil
+	})
+
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/providers/conn-shiteru/models", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var out struct {
+		Models []map[string]any `json:"models"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(out.Models) != 1 || out.Models[0]["id"] != "shiteru-model" || len(*calls) != 1 {
+		t.Fatalf("unexpected models: %+v; probes: %d", out.Models, len(*calls))
+	}
+}
+
 func TestHandleGetConnectionModels_NonCompatibleRejected(t *testing.T) {
 	repo, cleanup := setupNodeTestDB(t)
 	defer cleanup()

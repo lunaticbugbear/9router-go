@@ -1,19 +1,11 @@
 <script lang="ts">
-  import {
-    ArrowDown,
-    ArrowUp,
-    Brain,
-    Eye,
-    GripVertical,
-    Layers,
-    Plus,
-    X
-  } from 'lucide-svelte'
   import type { Combo } from '../../api/client'
   import { getModelCaps } from '../../lib/models'
   import Button from '../../lib/ui/Button.svelte'
+  import Icon from '../../lib/ui/Icon.svelte'
   import Input from '../../lib/ui/Input.svelte'
   import Modal from '../../lib/ui/Modal.svelte'
+  import SegmentedControl from '../../lib/ui/SegmentedControl.svelte'
 
   interface Props {
     isOpen: boolean
@@ -21,7 +13,7 @@
     models: string[]
     isSaving?: boolean
     onClose: () => void
-    onSave: (name: string, models: string[]) => Promise<void> | void
+    onSave: (name: string, models: string[], strategy: string) => Promise<void> | void
     onOpenModelPicker: () => void
     onUpdateModels: (models: string[]) => void
   }
@@ -37,12 +29,30 @@
     onUpdateModels,
   }: Props = $props()
 
-  let modalName = $state(editingCombo?.name || '')
+  let modalName = $state('')
   let modalNameError = $state('')
+  let modalModelsError = $state('')
+  let modalStrategy = $state<'fallback' | 'round-robin' | 'fusion'>('fallback')
   let editingIdx = $state<number | null>(null)
   let editDraft = $state('')
 
-  const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/
+  const strategyOptions = [
+    { value: 'fallback', label: 'Fallback' },
+    { value: 'round-robin', label: 'Round robin' },
+    { value: 'fusion', label: 'Fusion' },
+  ] as const
+
+  $effect(() => {
+    if (!isOpen) return
+    modalName = editingCombo?.name || ''
+    modalStrategy = editingCombo?.strategy === 'round-robin' || editingCombo?.strategy === 'fusion'
+      ? editingCombo.strategy
+      : 'fallback'
+    modalNameError = ''
+    modalModelsError = ''
+  })
+
+  const VALID_NAME_REGEX = /^[a-zA-Z0-9_.-]+$/
 
   function validateModalName(name: string): boolean {
     if (!name.trim()) {
@@ -59,7 +69,12 @@
 
   function handleSave() {
     if (!validateModalName(modalName)) return
-    onSave(modalName.trim(), models)
+    if (models.length === 0) {
+      modalModelsError = 'Add at least one model to make this route usable.'
+      return
+    }
+    modalModelsError = ''
+    onSave(modalName.trim(), models, modalStrategy)
   }
 
   function moveModel(idx: number, delta: number) {
@@ -99,122 +114,123 @@
   title={editingCombo ? 'Edit Combo' : 'Create Combo'}
   size="lg"
 >
-  <div class="flex flex-col gap-3">
-    <!-- Name -->
-    <div>
+  <div class="flex flex-col gap-6">
+    <div class="grid gap-4 sm:grid-cols-2">
       <Input
-        label="Combo Name"
+        label="Route name"
         bind:value={modalName}
-        placeholder="my-combo"
+        placeholder="fast-reliable"
         error={modalNameError}
       />
-      <p class="text-[10px] text-text-muted mt-0.5">
-        Only letters, numbers, -, _ and . allowed
-      </p>
+      <div class="flex flex-col gap-2">
+        <span class="ui-kicker text-text-muted">Routing strategy</span>
+        <SegmentedControl label="Routing strategy" options={strategyOptions} bind:value={modalStrategy} />
+        <p class="text-xs leading-relaxed text-text-muted">
+          {modalStrategy === 'fallback'
+            ? 'Try models in order; move on when one fails.'
+            : modalStrategy === 'round-robin'
+              ? 'Rotate requests across the model list.'
+              : 'Query every model, then combine responses with a judge.'}
+        </p>
+      </div>
     </div>
+    <p class="-mt-4 text-[11px] text-text-subtle">Letters, numbers, hyphens, underscores and periods.</p>
 
-    <!-- Models -->
-    <div>
-      <label class="text-sm font-medium mb-1.5 block">Models</label>
-
+    <section class="flex flex-col gap-3" aria-label="Models in this route">
+      <div class="flex items-end justify-between gap-3 border-b border-border-subtle pb-2">
+        <div>
+          <p class="ui-kicker text-text-subtle">{models.length} selected</p>
+          <h3 class="mt-0.5 text-sm font-semibold text-text-main">
+            {modalStrategy === 'fusion' ? 'Panel models' : 'Model order'}
+          </h3>
+        </div>
+        <span class="font-code text-[10px] text-text-subtle">
+          {modalStrategy === 'fallback' ? 'Next on failure' : modalStrategy === 'round-robin' ? 'Rotation order' : 'Run in parallel'}
+        </span>
+      </div>
       {#if models.length === 0}
-        <div class="text-center py-4 border border-dashed border-black/10 dark:border-white/10 rounded-lg bg-black/[0.01] dark:bg-white/[0.01]">
-          <Layers class="w-6 h-6 text-text-muted mx-auto mb-1 opacity-50" />
-          <p class="text-xs text-text-muted">No models added yet</p>
+        <div class="flex flex-col items-center gap-2 border-y border-dashed border-border-subtle py-8 text-center">
+          <Icon name="layers" class="text-text-subtle" />
+          <p class="text-sm font-medium text-text-main">Add the first model</p>
+          <p class="text-xs text-text-muted">Choose an available provider model for this route.</p>
         </div>
       {:else}
-        <div class="flex flex-col gap-1 max-h-[55vh] overflow-y-auto sm:max-h-[350px]">
+        <ol class="max-h-[42vh] divide-y divide-border-subtle overflow-y-auto border-y border-border-subtle sm:max-h-[350px]">
           {#each models as model, idx}
             {@const caps = getModelCaps(model)}
-            <div class="group flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 bg-black/[0.02] hover:bg-black/[0.04] dark:bg-white/[0.02] dark:hover:bg-white/[0.04] transition-colors">
-              <GripVertical class="w-3.5 h-3.5 text-text-muted cursor-grab shrink-0" />
-              <span class="text-[10px] font-medium text-text-muted w-3 text-center shrink-0">{idx + 1}</span>
+            <li class="grid min-w-0 grid-cols-[2rem_minmax(0,1fr)_auto] items-center gap-2 py-2.5">
+              <span class="font-code text-[11px] text-brass">{String(idx + 1).padStart(2, '0')}</span>
               {#if editingIdx === idx}
                 <input
-                  autofocus
                   bind:value={editDraft}
                   onblur={() => commitEdit(idx)}
                   onkeydown={(e) => {
                     if (e.key === 'Enter') commitEdit(idx)
                     if (e.key === 'Escape') editingIdx = null
                   }}
-                  class="min-w-0 flex-1 rounded border border-brand-500/40 bg-white px-1.5 py-0.5 font-mono text-xs text-text-main outline-none dark:bg-black/20"
+                  aria-label={`Edit model ${model}`}
+                  class="ui-input min-w-0 font-code text-xs"
                 />
               {:else}
-                <div
-                  class="min-w-0 flex-1 cursor-text truncate rounded px-1.5 py-0.5 font-mono text-xs text-text-main hover:bg-black/5 dark:hover:bg-white/5"
+                <button
+                  type="button"
                   onclick={() => startEdit(idx, model)}
-                  onkeydown={(e) => e.key === 'Enter' && startEdit(idx, model)}
-                  role="textbox"
-                  tabindex="0"
-                  title="Click to edit"
+                  class="min-w-0 truncate text-left font-code text-xs text-text-main hover:text-primary"
+                  title={`Edit ${model}`}
                 >
                   {model}
-                </div>
-              {/if}
-              {#if caps.vision}
-                <Eye class="w-3 h-3 text-blue-500 shrink-0" title="Vision — Supports image input" />
-              {/if}
-              {#if caps.reasoning}
-                <Brain class="w-3 h-3 text-amber-500 shrink-0" title="Reasoning — Supports reasoning / thinking" />
+                </button>
               {/if}
               <div class="flex shrink-0 items-center gap-0.5">
+                {#if caps.vision}<Icon name="eye" size={14} class="text-info" label="Vision" />{/if}
+                {#if caps.reasoning}<Icon name="brain" size={14} class="text-warning" label="Reasoning" />{/if}
                 <button
                   type="button"
                   onclick={() => moveModel(idx, -1)}
                   disabled={idx === 0}
-                  class="p-0.5 rounded {idx === 0 ? 'text-text-muted/20 cursor-not-allowed' : 'text-text-muted hover:text-brand-500 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer'}"
+                  aria-label={`Move ${model} up`}
+                  class="flex size-8 items-center justify-center rounded-brand {idx === 0 ? 'text-text-muted/20 cursor-not-allowed' : 'text-text-muted hover:bg-surface-2 hover:text-text-main cursor-pointer'}"
                   title="Move up"
                 >
-                  <ArrowUp class="w-3 h-3" />
+                  <Icon name="arrow-up" size={14} />
                 </button>
                 <button
                   type="button"
                   onclick={() => moveModel(idx, 1)}
                   disabled={idx === models.length - 1}
-                  class="p-0.5 rounded {idx === models.length - 1 ? 'text-text-muted/20 cursor-not-allowed' : 'text-text-muted hover:text-brand-500 hover:bg-black/5 dark:hover:bg-white/5 cursor-pointer'}"
+                  aria-label={`Move ${model} down`}
+                  class="flex size-8 items-center justify-center rounded-brand {idx === models.length - 1 ? 'text-text-muted/20 cursor-not-allowed' : 'text-text-muted hover:bg-surface-2 hover:text-text-main cursor-pointer'}"
                   title="Move down"
                 >
-                  <ArrowDown class="w-3 h-3" />
+                  <Icon name="arrow-down" size={14} />
+                </button>
+                <button
+                  type="button"
+                  onclick={() => removeModel(idx)}
+                  aria-label={`Remove ${model}`}
+                  class="flex size-8 items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-danger/10 hover:text-danger cursor-pointer"
+                  title="Remove"
+                >
+                  <Icon name="close" size={14} />
                 </button>
               </div>
-              <button
-                type="button"
-                onclick={() => removeModel(idx)}
-                class="p-0.5 hover:bg-red-500/10 rounded text-text-muted hover:text-red-500 transition-all cursor-pointer"
-                title="Remove"
-              >
-                <X class="w-3 h-3" />
-              </button>
-            </div>
+            </li>
           {/each}
-        </div>
+        </ol>
       {/if}
-
-      <!-- Add Model button -->
-      <button
-        type="button"
-        onclick={onOpenModelPicker}
-        class="w-full mt-2 py-2 border border-dashed border-black/10 dark:border-white/10 rounded-lg text-xs text-brand-500 font-medium hover:text-brand-500 hover:border-brand-500/50 transition-colors flex items-center justify-center gap-1 cursor-pointer"
-      >
-        <Plus class="w-4 h-4" />
-        <span>Add Model</span>
-      </button>
-    </div>
-
-    <!-- Actions -->
-    <div class="flex flex-col gap-2 pt-1 sm:flex-row">
-      <Button onclick={onClose} variant="ghost" fullWidth size="sm">
-        Cancel
+      {#if modalModelsError}<p role="alert" class="text-xs text-danger">{modalModelsError}</p>{/if}
+      <Button variant="secondary" icon="add" onclick={() => { modalModelsError = ''; onOpenModelPicker() }} fullWidth>
+        Add models
       </Button>
+    </section>
+    <div class="flex justify-end gap-2 border-t border-border-subtle pt-4">
+      <Button onclick={onClose} variant="ghost" disabled={isSaving}>Cancel</Button>
       <Button
         onclick={handleSave}
-        fullWidth
-        size="sm"
-        disabled={!modalName.trim() || !!modalNameError || isSaving}
+        disabled={!modalName.trim() || !!modalNameError || models.length === 0 || isSaving}
         loading={isSaving}
       >
-        {isSaving ? 'Saving...' : editingCombo ? 'Save' : 'Create'}
+        {editingCombo ? 'Save route' : 'Create route'}
       </Button>
     </div>
   </div>

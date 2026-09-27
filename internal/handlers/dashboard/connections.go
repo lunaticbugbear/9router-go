@@ -627,8 +627,7 @@ func (h *DashboardHandler) HandleDeleteConnection(w http.ResponseWriter, r *http
 // HandleGetConnectionModels handles GET /api/providers/{id}/models.
 // Mirrors upstream src/app/api/providers/[id]/models/route.js for
 // OpenAI/Anthropic-compatible connections: the id is a connection id whose
-// provider must be an openai-compatible-*/anthropic-compatible-* node. The
-// node baseUrl is probed for GET /models (upstream parity: OpenAI uses
+// provider resolves to a compatible node. The node baseUrl is probed for GET /models (OpenAI uses
 // Bearer, Anthropic strips a /messages suffix and sends x-api-key +
 // anthropic-version plus Bearer). Other providers answer 400.
 func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *http.Request) {
@@ -844,6 +843,15 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 
 	isOpenAI := strings.HasPrefix(conn.Provider, "openai-compatible-")
 	isAnthropic := strings.HasPrefix(conn.Provider, "anthropic-compatible-")
+	node, nodeData, nodeErr := h.Repo.GetProviderNodeByID(conn.Provider)
+	if nodeErr != nil {
+		handlerutil.WriteJSONError(w, http.StatusInternalServerError, "failed to load provider node")
+		return
+	}
+	if node != nil {
+		isOpenAI = node.Type != nil && (*node.Type == "openai-compatible" || *node.Type == "openai")
+		isAnthropic = node.Type != nil && (*node.Type == "anthropic-compatible" || *node.Type == "anthropic")
+	}
 	if !isOpenAI && !isAnthropic {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "provider "+conn.Provider+" does not support models listing")
 		return
@@ -854,10 +862,8 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 			baseURL = strings.TrimSpace(v)
 		}
 	}
-	if baseURL == "" {
-		if _, nodeData, nerr := h.Repo.GetProviderNodeByID(conn.Provider); nerr == nil && nodeData != nil {
-			baseURL = strings.TrimSpace(nodeData.BaseURL)
-		}
+	if baseURL == "" && nodeData != nil {
+		baseURL = strings.TrimSpace(nodeData.BaseURL)
 	}
 	if baseURL == "" {
 		handlerutil.WriteJSONError(w, http.StatusBadRequest, "no base URL configured for OpenAI compatible provider")
@@ -871,6 +877,8 @@ func (h *DashboardHandler) HandleGetConnectionModels(w http.ResponseWriter, r *h
 		headers["anthropic-version"] = "2023-06-01"
 		headers["Authorization"] = "Bearer " + connData.APIKey
 	} else {
+		baseURL = strings.TrimSuffix(baseURL, "/chat/completions")
+		baseURL = strings.TrimSuffix(baseURL, "/responses")
 		headers["Authorization"] = "Bearer " + connData.APIKey
 	}
 	status, body, err := validateProbeDo(r.Context(), http.MethodGet, baseURL+"/models", headers, nil)

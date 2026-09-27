@@ -39,6 +39,9 @@
   import AddCompatibleNodeModal from './AddCompatibleNodeModal.svelte'
   import EditCompatibleNodeModal from './EditCompatibleNodeModal.svelte'
   import FreebuffSessionBanner from './FreebuffSessionBanner.svelte'
+  import Button from '../../lib/ui/Button.svelte'
+  import Icon from '../../lib/ui/Icon.svelte'
+  import SegmentedControl from '../../lib/ui/SegmentedControl.svelte'
 
   interface Props {
     providerId: string
@@ -174,6 +177,25 @@
         (a.name || a.id).localeCompare(b.name || b.id, undefined, { sensitivity: 'base' })
       )
   )
+  let modelSearchQuery = $state('')
+  let modelStatusFilter = $state<'all' | 'enabled' | 'disabled'>('all')
+  const modelStatusOptions = [
+    { value: 'all', label: 'All' },
+    { value: 'enabled', label: 'Enabled' },
+    { value: 'disabled', label: 'Disabled' },
+  ] as const
+  let filteredModels = $derived(
+    allAvailableModels.filter((model) => {
+      const isDisabled = disabledModelIds.includes(model.id)
+      const matchesStatus = modelStatusFilter === 'all' ||
+        (modelStatusFilter === 'disabled' ? isDisabled : !isDisabled)
+      const query = modelSearchQuery.trim().toLowerCase()
+      return matchesStatus && (!query || `${model.id} ${model.name || ''}`.toLowerCase().includes(query))
+    }).sort((first, second) =>
+      (first.name || first.id).localeCompare(second.name || second.id, undefined, { sensitivity: 'base' })
+    )
+  )
+  let disabledModelCount = $derived(allAvailableModels.filter((model) => disabledModelIds.includes(model.id)).length)
   // Suggested free models from the provider's public catalog (upstream parity).
   let suggestedModels = $state<SuggestedModel[]>([])
   let suggestedNotAdded = $derived(
@@ -192,7 +214,12 @@
   let newCompatibleModel = $state('')
   let isAddingCompatibleModel = $state(false)
   let isImportingCompatibleModels = $state(false)
+  let compatibleSearchQuery = $state('')
+  let compatibleImportMessage = $state('')
+  let compatibleImportFailed = $state(false)
   let isImportingLiveCatalogModels = $state(false)
+  let modelImportMessage = $state('')
+  let modelImportFailed = $state(false)
   let compatibleTestId = $state<string | null>(null)
   let compatibleTestResults = $state<Record<string, 'ok' | 'error'>>({})
   let compatibleTestErrors = $state<Record<string, string | null>>({})
@@ -220,6 +247,11 @@
     // between requests. rows is created above on every evaluation, so the
     // in-place sort is safe.
     return rows.sort((a, b) => a.id.localeCompare(b.id, undefined, { sensitivity: 'base' }))
+  })
+  let filteredCompatibleRows = $derived.by(() => {
+    const query = compatibleSearchQuery.trim().toLowerCase()
+    if (!query) return compatibleRows
+    return compatibleRows.filter((row) => `${row.id} ${displayAlias()}/${row.id}`.toLowerCase().includes(query))
   })
   let canImportCompatible = $derived(providerConnections.some((c) => c.isActive !== 0))
 
@@ -260,7 +292,6 @@
   let copiedModelId = $state<string | null>(null)
   let modelTestStatuses = $state<Record<string, 'ok' | 'error' | 'testing'>>({})
   let modelTestErrors = $state<Record<string, string | null>>({})
-  let activeModelTestError = $state<string | null>(null)
 
   // Modals state
   let showRiskNoticeModal = $state(false)
@@ -1679,7 +1710,6 @@
   async function testModel(modelId: string) {
     modelTestStatuses[modelId] = 'testing'
     modelTestErrors[modelId] = null
-    activeModelTestError = null
     try {
       const res = await api.testModel(`${storageAlias}/${modelId}`)
       if (res.ok) {
@@ -1689,13 +1719,11 @@
         modelTestStatuses[modelId] = 'error'
         const err = res.error || 'Model test failed'
         modelTestErrors[modelId] = err
-        activeModelTestError = `${modelId}: ${err}`
       }
     } catch (err) {
       modelTestStatuses[modelId] = 'error'
       const msg = err instanceof Error ? err.message : 'Model test failed'
       modelTestErrors[modelId] = msg
-      activeModelTestError = `${modelId}: ${msg}`
     }
   }
 
@@ -1865,7 +1893,7 @@
     compatibleTestId = modelId
     compatibleTestErrors[modelId] = null
     try {
-      const res = await api.testModel(`${storageAlias}/${modelId}`)
+      const res = await api.testModel(`${displayAlias()}/${modelId}`)
       if (res.ok) {
         compatibleTestResults[modelId] = 'ok'
         compatibleTestErrors[modelId] = null
@@ -1873,13 +1901,11 @@
         compatibleTestResults[modelId] = 'error'
         const err = res.error || 'Model test failed'
         compatibleTestErrors[modelId] = err
-        activeModelTestError = `${modelId}: ${err}`
       }
     } catch (err) {
       compatibleTestResults[modelId] = 'error'
       const msg = err instanceof Error ? err.message : 'Model test failed'
       compatibleTestErrors[modelId] = msg
-      activeModelTestError = `${modelId}: ${msg}`
     } finally {
       compatibleTestId = null
     }
@@ -1894,13 +1920,19 @@
   async function handleImportCompatibleModels() {
     if (isImportingCompatibleModels) return
     const active = providerConnections.find((c) => c.isActive !== 0)
-    if (!active) return
+    if (!active) {
+      compatibleImportFailed = true
+      compatibleImportMessage = 'Connect an active account before fetching models.'
+      return
+    }
     isImportingCompatibleModels = true
+    compatibleImportFailed = false
+    compatibleImportMessage = ''
     try {
       const res = await api.getConnectionModels(active.id)
       const models = res.models || []
       if (models.length === 0) {
-        alert('No models returned from /models.')
+        compatibleImportMessage = 'The provider returned no models from /models.'
         return
       }
       let imported = 0
@@ -1915,9 +1947,12 @@
         imported += 1
       }
       await refreshCompatibleModels()
-      if (imported === 0) alert('No new models were added.')
+      compatibleImportMessage = imported === 0
+        ? `Already up to date · ${models.length} models available.`
+        : `Added ${imported} ${imported === 1 ? 'model' : 'models'} from /models.`
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to import models')
+      compatibleImportFailed = true
+      compatibleImportMessage = err instanceof Error ? err.message : 'Failed to fetch models.'
     } finally {
       isImportingCompatibleModels = false
     }
@@ -1927,15 +1962,18 @@
     if (isImportingLiveCatalogModels) return
     const active = providerConnections.find((c) => c.isActive !== 0)
     if (!active) {
-      alert('Add an active connection first to fetch models.')
+      modelImportFailed = true
+      modelImportMessage = 'Connect an account first to fetch models.'
       return
     }
     isImportingLiveCatalogModels = true
+    modelImportFailed = false
+    modelImportMessage = ''
     try {
       const res = await api.getConnectionModels(active.id)
       const models = res.models || []
       if (models.length === 0) {
-        alert('No models returned from /models.')
+        modelImportMessage = 'The provider returned no models from /models.'
         return
       }
       let imported = 0
@@ -1963,13 +2001,12 @@
       }
       const modelsData = await fetchProviderModelsData(providerId, storageAlias)
       customModels = modelsData.customModels
-      if (imported === 0) {
-        alert('All models already exist, no new models added.')
-      } else {
-        alert(`Successfully added ${imported} models.`)
-      }
+      modelImportMessage = imported === 0
+        ? 'Models are up to date.'
+        : `Added ${imported} ${imported === 1 ? 'model' : 'models'}.`
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Failed to import models')
+      modelImportFailed = true
+      modelImportMessage = err instanceof Error ? err.message : 'Failed to fetch models.'
     } finally {
       isImportingLiveCatalogModels = false
     }
@@ -2723,124 +2760,150 @@
 
   <!-- 4. Models Card: compatible nodes use upstream CompatibleModelsSection layout -->
   {#if isCompatibleNode}
-  <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
-    <div class="flex flex-col gap-4">
-      <p class="text-sm text-text-muted">
-        Add {isAnthropicCompatibleNode ? 'Anthropic' : 'OpenAI'}-compatible models manually or import them from the /models endpoint.
-      </p>
-      <div class="flex items-end gap-2 flex-wrap">
-        <div class="flex-1 min-w-[240px]">
-          <label for="new-compatible-model-input" class="text-xs text-text-muted mb-1 block">Model ID</label>
-          <input
-            id="new-compatible-model-input"
-            type="text"
-            bind:value={newCompatibleModel}
-            onkeydown={(e) => { if (e.key === 'Enter') handleAddCompatibleModel() }}
-            placeholder={isAnthropicCompatibleNode ? 'claude-3-opus-20240229' : 'gpt-4o'}
-            class="w-full px-3 py-2 text-sm border border-border rounded-lg bg-background focus:outline-none focus:border-primary"
-          />
-        </div>
-        <button
-          type="button"
-          onclick={handleAddCompatibleModel}
-          disabled={!newCompatibleModel.trim() || isAddingCompatibleModel}
-          class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-brand-500 hover:bg-brand-600 text-white shadow-sm h-8 px-4 text-xs rounded-[8px] disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <span class="material-symbols-outlined text-[18px]">add</span>
-          {isAddingCompatibleModel ? 'Adding...' : 'Add'}
-        </button>
-        <button
-          type="button"
-          onclick={handleImportCompatibleModels}
-          disabled={!canImportCompatible || isImportingCompatibleModels}
-          class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-8 px-4 text-xs rounded-[8px] disabled:opacity-50 disabled:cursor-not-allowed"
-        >
-          <span class="material-symbols-outlined text-[18px]">download</span>
-          {isImportingCompatibleModels ? 'Importing...' : 'Import from /models'}
-        </button>
+  <section class="flex min-w-0 flex-col gap-4 rounded-brand-lg border border-border-subtle bg-surface p-4 sm:p-6" aria-labelledby="compatible-models-heading">
+    <header class="flex flex-col gap-3 border-b border-border-subtle pb-4 sm:flex-row sm:items-center sm:justify-between">
+      <div class="min-w-0">
+        <p class="ui-kicker text-text-subtle">Compatible endpoint</p>
+        <h2 id="compatible-models-heading" class="mt-1 text-[15px] font-semibold text-text-main">Models</h2>
+        <p class="mt-1 text-xs text-text-muted">Fetch the endpoint catalog or add a model ID directly.</p>
       </div>
-      {#if !canImportCompatible}
-        <p class="text-xs text-text-muted">Add a connection to enable importing models.</p>
-      {/if}
-      {#if compatibleRows.length > 0}
-        <div class="flex flex-col gap-3">
-          {#each compatibleRows as row (row.source + ':' + row.id)}
-            {@const tStatus = compatibleTestResults[row.id]}
-            {@const tError = compatibleTestErrors[row.id]}
-            {@const isTestingRow = compatibleTestId === row.id}
-            <div class="flex items-start gap-3 p-3 rounded-lg border {tStatus === 'ok' ? 'border-green-500/40' : tStatus === 'error' ? 'border-red-500/40' : 'border-border'} hover:bg-sidebar/50">
-              <span
-                class="material-symbols-outlined text-base text-text-muted mt-0.5"
-                style={tStatus === 'ok' ? 'color:#22c55e' : tStatus === 'error' ? 'color:#ef4444' : undefined}
-              >
-                {tStatus === 'ok' ? 'check_circle' : tStatus === 'error' ? 'cancel' : 'smart_toy'}
-              </span>
-              <div class="flex-1 min-w-0">
-                <p class="text-sm font-medium truncate">{row.id}</p>
-                <div class="flex items-center gap-1 mt-1">
-                  <code class="text-xs text-text-muted font-mono bg-sidebar px-1.5 py-0.5 rounded">{displayAlias()}/{row.id}</code>
-                  <div class="relative group/btn">
-                    <button
-                      type="button"
-                      onclick={() => copyCompatibleModel(row.id)}
-                      class="p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary cursor-pointer"
-                    >
-                      <span class="material-symbols-outlined text-sm">{copiedModelId === row.id ? 'check' : 'content_copy'}</span>
-                    </button>
-                    <span class="pointer-events-none absolute top-5 left-1/2 -translate-x-1/2 text-[10px] text-text-muted whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity">
-                      {copiedModelId === row.id ? 'Copied!' : 'Copy'}
-                    </span>
-                  </div>
-                  {#if providerConnections.length > 0}
-                    <div class="relative group/btn">
-                      <button
-                        type="button"
-                        onclick={() => handleTestCompatibleModel(row.id)}
-                        disabled={isTestingRow}
-                        class="p-0.5 hover:bg-sidebar rounded text-text-muted hover:text-primary transition-colors cursor-pointer"
-                      >
-                        <span class="material-symbols-outlined text-sm" style={isTestingRow ? 'animation: spin 1s linear infinite' : undefined}>
-                          {isTestingRow ? 'progress_activity' : 'science'}
-                        </span>
-                      </button>
-                      <span class="pointer-events-none absolute top-5 left-1/2 -translate-x-1/2 text-[10px] text-text-muted whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity">
-                        {isTestingRow ? 'Testing...' : 'Test'}
-                      </span>
-                    </div>
-                  {/if}
-                </div>
-                {#if tError}
-                  <div class="mt-2 flex items-start gap-1.5 text-xs text-red-500 bg-red-500/10 px-2.5 py-1.5 rounded-md border border-red-500/20">
-                    <span class="material-symbols-outlined text-sm shrink-0 mt-0.5">error</span>
-                    <span class="break-words font-medium leading-relaxed">{tError}</span>
-                  </div>
-                {/if}
+      <Button
+        icon="download"
+        onclick={handleImportCompatibleModels}
+        loading={isImportingCompatibleModels}
+        disabled={!canImportCompatible}
+        title={canImportCompatible ? 'Fetch models from /models' : 'Add an active connection first'}
+      >
+        Fetch models
+      </Button>
+    </header>
+
+    {#if compatibleImportMessage}
+      <p role={compatibleImportFailed ? 'alert' : 'status'} class="text-xs {compatibleImportFailed ? 'text-danger' : 'text-success'}">
+        {compatibleImportMessage}
+      </p>
+    {/if}
+
+    <form
+      class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto]"
+      onsubmit={(event) => { event.preventDefault(); handleAddCompatibleModel() }}
+    >
+      <label class="min-w-0">
+        <span class="ui-kicker mb-1 block text-text-subtle">Add model ID</span>
+        <input
+          id="new-compatible-model-input"
+          type="text"
+          bind:value={newCompatibleModel}
+          placeholder={isAnthropicCompatibleNode ? 'claude-3-opus-20240229' : 'provider/model-id'}
+          class="ui-input w-full font-code text-xs"
+        />
+      </label>
+      <div class="flex items-end">
+        <Button type="submit" icon="add" disabled={!newCompatibleModel.trim() || isAddingCompatibleModel} loading={isAddingCompatibleModel} fullWidth>
+          Add model
+        </Button>
+      </div>
+    </form>
+
+    {#if !canImportCompatible}
+      <p class="text-xs text-text-muted">Add an active connection to fetch the provider catalog.</p>
+    {/if}
+
+    <div class="flex flex-col gap-3 border-t border-border-subtle pt-4 sm:flex-row sm:items-center">
+      <label class="relative min-w-0 flex-1">
+        <span class="sr-only">Search compatible models</span>
+        <Icon name="search" size={16} class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle" />
+        <input
+          type="search"
+          bind:value={compatibleSearchQuery}
+          placeholder="Search model IDs"
+          class="ui-input w-full pl-9 font-code text-xs"
+        />
+      </label>
+      <span class="shrink-0 font-code text-[11px] text-text-muted" role="status">
+        {filteredCompatibleRows.length} of {compatibleRows.length} models
+      </span>
+    </div>
+
+    {#if compatibleRows.length === 0}
+      <div class="flex flex-col items-center gap-2 border-y border-dashed border-border-subtle py-10 text-center">
+        <Icon name="layers" size={20} class="text-text-subtle" />
+        <p class="text-sm font-medium text-text-main">No models added</p>
+        <p class="text-xs text-text-muted">Fetch the catalog or add a model ID above.</p>
+      </div>
+    {:else if filteredCompatibleRows.length === 0}
+      <div class="border-y border-border-subtle py-8 text-center">
+        <p class="text-sm font-medium text-text-main">No matching models</p>
+        <p class="mt-1 text-xs text-text-muted">Try another model ID.</p>
+      </div>
+    {:else}
+      <ul aria-label="Compatible models" class="divide-y divide-border-subtle border-y border-border-subtle">
+        {#each filteredCompatibleRows as row (row.source + ':' + row.id)}
+          {@const tStatus = compatibleTestResults[row.id]}
+          {@const tError = compatibleTestErrors[row.id]}
+          {@const isTestingRow = compatibleTestId === row.id}
+          <li class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-2 py-3 transition-colors hover:bg-surface-2 sm:px-3">
+            <div class="min-w-0">
+              <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <code class="min-w-0 break-all font-code text-xs text-text-main">{displayAlias()}/{row.id}</code>
+                <span class="rounded-brand border border-border-subtle px-1.5 py-0.5 font-code text-[10px] text-text-subtle">
+                  {row.source === 'legacyAlias' ? 'Alias' : 'Custom'}
+                </span>
+                {#if tStatus === 'ok'}<span class="font-code text-[10px] text-success">Passed</span>{/if}
+                {#if tStatus === 'error'}<span class="font-code text-[10px] text-danger">Failed</span>{/if}
               </div>
+              {#if tError}<p class="mt-1 break-words text-xs text-danger" role="status">{tError}</p>{/if}
+            </div>
+
+            <div class="flex shrink-0 items-center gap-0.5">
+              <button
+                type="button"
+                onclick={() => handleTestCompatibleModel(row.id)}
+                disabled={isTestingRow || !canImportCompatible}
+                title={isTestingRow ? 'Testing model' : tError || (tStatus === 'ok' ? 'Test passed' : 'Test model')}
+                aria-label={`Test ${row.id}`}
+                class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:cursor-wait disabled:opacity-50"
+              >
+                <Icon name={isTestingRow ? 'spinner' : tStatus === 'ok' ? 'success' : tStatus === 'error' ? 'error' : 'lab'} spin={isTestingRow}
+                  class={tStatus === 'ok' ? 'text-success' : tStatus === 'error' ? 'text-danger' : ''} />
+              </button>
+              <button
+                type="button"
+                onclick={() => copyCompatibleModel(row.id)}
+                title={copiedModelId === row.id ? 'Copied' : 'Copy model ID'}
+                aria-label={`Copy ${row.id}`}
+                class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main"
+              >
+                <Icon name={copiedModelId === row.id ? 'copied' : 'copy'} class={copiedModelId === row.id ? 'text-success' : ''} />
+              </button>
               <button
                 type="button"
                 onclick={() => handleDeleteCompatibleModel(row)}
-                class="p-1 hover:bg-red-50 rounded text-red-500 cursor-pointer"
-                title="Remove model"
+                title={`Remove ${row.id}`}
+                aria-label={`Remove ${row.id}`}
+                class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-danger/10 hover:text-danger"
               >
-                <span class="material-symbols-outlined text-sm">delete</span>
+                <Icon name="delete" />
               </button>
             </div>
-          {/each}
-        </div>
-      {/if}
-    </div>
-  </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
   {:else}
-  <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-6">
-    <!-- Header -->
-    <div class="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-      <div class="flex items-center gap-3">
-        <h2 class="text-lg font-semibold">Available Models</h2>
+  <div class="rounded-brand-lg border border-border-subtle bg-surface p-4 sm:p-6">
+    <div class="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+      <div class="flex min-w-0 flex-wrap items-center gap-3">
+        <div>
+          <p class="ui-kicker text-text-subtle">Model registry</p>
+          <h2 class="mt-0.5 text-[15px] font-semibold text-text-main">Available models</h2>
+        </div>
         <select
           title="Appends (level) suffix to copied model names"
           value={thinkingLevel}
           onchange={handleThinkingChange}
-          class="rounded-md border border-border bg-background px-2 py-1 text-xs focus:border-primary focus:outline-none cursor-pointer"
+          class="ui-input cursor-pointer font-code text-xs"
         >
           <option value="auto">Thinking: Auto</option>
           <option value="minimal">Thinking: Minimal</option>
@@ -2852,34 +2915,47 @@
         </select>
       </div>
 
-      <div class="flex gap-2">
-        <button
-          type="button"
-          onclick={handleToggleAllModels}
-          class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] bg-surface-2 hover:bg-surface-3 text-text-main border border-border h-7 px-3 text-xs rounded-[8px]"
-        >
-          <span class="material-symbols-outlined text-[18px]">block</span>
-          {allDisabled ? 'Enable All' : 'Disable All'}
-        </button>
+      <div class="flex flex-wrap items-center gap-2">
+        {#if allAvailableModels.length > 0}
+          <Button size="sm" variant="ghost" onclick={handleToggleAllModels} icon={allDisabled ? 'power' : 'blocked'}>
+            {allDisabled ? 'Enable all' : 'Disable all'}
+          </Button>
+        {/if}
+        <Button size="sm" variant="secondary" icon="add" onclick={() => (showAddCustomModelModal = true)}>Add model</Button>
+        <Button size="sm" icon="refresh" onclick={handleImportLiveCatalogModels}
+          loading={isImportingLiveCatalogModels} disabled={!canImportCompatible}
+          title={canImportCompatible ? 'Fetch models from the connected provider' : 'Connect an account first'}>
+          Fetch models
+        </Button>
       </div>
     </div>
 
-    {#if activeModelTestError}
-      <div class="mb-3 flex items-start gap-2.5 rounded-lg border border-red-500/30 bg-red-500/10 p-3 text-xs text-red-600 dark:text-red-400">
-        <span class="material-symbols-outlined shrink-0 text-base">error</span>
-        <div class="flex-1 font-medium leading-relaxed">
-          {activeModelTestError}
-        </div>
-        <button
-          type="button"
-          onclick={() => (activeModelTestError = null)}
-          class="text-red-600 dark:text-red-400 hover:opacity-75 cursor-pointer"
-          title="Dismiss"
-        >
-          <span class="material-symbols-outlined text-sm">close</span>
-        </button>
-      </div>
+    <div class="mb-3 flex flex-col gap-3 border-y border-border-subtle py-3 lg:flex-row lg:items-center">
+      <label class="relative min-w-0 flex-1">
+        <span class="sr-only">Search models</span>
+        <Icon name="search" size={16} class="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-text-subtle" />
+        <input
+          type="search"
+          bind:value={modelSearchQuery}
+          placeholder="Search model ID or name"
+          class="ui-input w-full pl-9 font-code text-xs"
+        />
+      </label>
+      <SegmentedControl label="Model status" options={modelStatusOptions} bind:value={modelStatusFilter} />
+      <p class="shrink-0 font-code text-[11px] text-text-muted" role="status">
+        {allAvailableModels.length} total · {visibleModels.length} enabled · {disabledModelCount} disabled
+      </p>
+    </div>
+
+    {#if modelImportMessage}
+      <p role={modelImportFailed ? 'alert' : 'status'} class="mb-4 text-xs {modelImportFailed ? 'text-danger' : 'text-success'}">
+        {modelImportMessage}
+      </p>
     {/if}
+    {#if !canImportCompatible && allAvailableModels.length === 0}
+      <p class="mb-4 text-xs text-text-muted">Connect an account to fetch models, or add a model ID manually.</p>
+    {/if}
+
     {#if isFreebuff}
       <div class="mb-4">
         <FreebuffSessionBanner
@@ -2904,142 +2980,74 @@
         />
       </div>
     {/if}
-    <!-- Models flex-wrap list matching upstream -->
-    <div class="flex flex-wrap gap-3">
-      {#each visibleModels as model (model.id)}
-        {@const fullModelId = `${storageAlias}/${model.id}`}
-        {@const testStatus = modelTestStatuses[model.id]}
-        {@const isTestingThis = testStatus === 'testing'}
-        {@const isSessionActive = checkIsActiveSession(model.id)}
-        <div
-          class="group min-w-0 max-w-full rounded-lg border px-3 py-2 {testStatus === 'ok' ? 'border-green-500/40' : testStatus === 'error' ? 'border-red-500/40' : 'border-border'} hover:bg-sidebar/50 transition-colors"
-        >
-          <div class="flex min-w-0 items-start gap-2 sm:items-center">
-            <span class="material-symbols-outlined shrink-0 text-base text-text-muted">smart_toy</span>
-            <div class="flex min-w-0 flex-1 flex-col gap-1">
-              <div class="flex items-center gap-1.5 flex-wrap">
-                <code class="max-w-[72vw] truncate rounded bg-sidebar px-1.5 py-0.5 font-mono text-xs text-text-muted sm:max-w-[360px]">
-                  {fullModelId}
-                </code>
-                {#if isSessionActive}
-                  <span class="inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border border-emerald-500/30">
-                    <span class="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                    Active Session
+    {#if filteredModels.length === 0}
+      <div class="flex flex-col items-center gap-2 border-y border-border-subtle py-10 text-center">
+        <Icon name="search" size={20} class="text-text-subtle" />
+        <p class="text-sm font-medium text-text-main">
+          {allAvailableModels.length === 0 ? 'No models in the registry' : 'No models match this filter'}
+        </p>
+        <p class="text-xs text-text-muted">
+          {allAvailableModels.length === 0 ? 'Fetch models from the provider or add a model ID manually.' : 'Try another search or status filter.'}
+        </p>
+      </div>
+    {:else}
+      <ul aria-label="Available models" class="divide-y divide-border-subtle border-y border-border-subtle">
+        {#each filteredModels as model (model.id)}
+          {@const fullModelId = `${storageAlias}/${model.id}`}
+          {@const isDisabled = disabledModelIds.includes(model.id)}
+          {@const testStatus = modelTestStatuses[model.id]}
+          {@const isTestingThis = testStatus === 'testing'}
+          {@const isSessionActive = checkIsActiveSession(model.id)}
+          <li class="grid min-w-0 grid-cols-[minmax(0,1fr)_auto] items-center gap-3 px-2 py-3 transition-colors hover:bg-surface-2 sm:px-3">
+            <div class="min-w-0">
+              <div class="flex min-w-0 flex-wrap items-center gap-2">
+                <code class="min-w-0 break-all font-code text-xs text-text-main">{fullModelId}</code>
+                {#if isDisabled}
+                  <span class="rounded-brand border border-border-subtle px-1.5 py-0.5 font-code text-[10px] text-text-subtle">Disabled</span>
+                {:else if isSessionActive}
+                  <span class="inline-flex items-center gap-1 rounded-brand border border-focus/30 bg-focus/8 px-1.5 py-0.5 font-code text-[10px] text-focus">
+                    <span class="size-1.5 animate-pulse rounded-full bg-focus"></span>Active
                   </span>
                 {/if}
               </div>
-              <span class="flex min-w-0 items-center text-[9px] gap-1 pl-1">
-                <span class="truncate text-[9px] italic text-text-muted/70">{model.name}</span>
-                <span class="inline-flex items-center gap-0.5">
-                  {#if model.caps?.vision}
-                    <div class="relative inline-flex group/tt">
-                      <span class="material-symbols-outlined leading-none cursor-help text-text-muted/70" style="font-size: 12px;">visibility</span>
-                      <div class="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-50 w-max max-w-56 rounded px-2 py-1 text-[11px] leading-snug bg-gray-900 text-white opacity-0 group-hover/tt:opacity-100 transition-opacity duration-150 whitespace-normal shadow-lg">
-                        Vision — Supports image input
-                      </div>
-                    </div>
-                  {/if}
-                  {#if model.caps?.reasoning}
-                    <div class="relative inline-flex group/tt">
-                      <span class="material-symbols-outlined leading-none cursor-help text-text-muted/70" style="font-size: 12px;">neurology</span>
-                      <div class="pointer-events-none absolute bottom-full left-1/2 -translate-x-1/2 mb-1.5 z-50 w-max max-w-56 rounded px-2 py-1 text-[11px] leading-snug bg-gray-900 text-white opacity-0 group-hover/tt:opacity-100 transition-opacity duration-150 whitespace-normal shadow-lg">
-                        Reasoning — Supports reasoning / thinking
-                      </div>
-                    </div>
-                  {/if}
-                </span>
-              </span>
-            </div>
+              <div class="mt-1 flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-text-muted">
+                <span class="min-w-0 truncate">{model.name || model.id}</span>
+                {#if model.caps?.vision}<span class="inline-flex items-center gap-1"><Icon name="eye" size={12} />Vision</span>{/if}
+                {#if model.caps?.reasoning}<span class="inline-flex items-center gap-1"><Icon name="sparkles" size={12} />Reasoning</span>{/if}
+                {#if testStatus === 'ok'}<span class="text-success">Test passed</span>{/if}
+                {#if testStatus === 'error'}<span class="text-danger">Test failed</span>{/if}
+              </div>
               {#if modelTestErrors[model.id]}
-                <span class="text-[9px] text-red-500 dark:text-red-400 font-medium pl-1 truncate max-w-[280px]" title={modelTestErrors[model.id]}>
-                  {modelTestErrors[model.id]}
-                </span>
+                <p class="mt-1 break-words text-xs text-danger" role="status">{modelTestErrors[model.id]}</p>
               {/if}
-
-            <!-- Test button -->
-            <div class="relative shrink-0 group/btn">
-              <button
-                type="button"
-                onclick={() => testModel(model.id)}
-                disabled={isTestingThis}
-                class="rounded p-0.5 text-text-muted transition-opacity hover:bg-sidebar hover:text-primary opacity-100 sm:opacity-0 sm:group-hover:opacity-100 cursor-pointer"
-                title={modelTestErrors[model.id] || (testStatus === 'ok' ? 'Test Passed' : 'Test')}
-              >
-                {#if isTestingThis}
-                  <span class="material-symbols-outlined text-sm animate-spin text-primary">progress_activity</span>
-                {:else if testStatus === 'ok'}
-                  <span class="material-symbols-outlined text-sm text-green-500">check</span>
-                {:else if testStatus === 'error'}
-                  <span class="material-symbols-outlined text-sm text-red-500">error</span>
-                {:else}
-                  <span class="material-symbols-outlined text-sm">science</span>
-                {/if}
-              </button>
-              <span class="pointer-events-none absolute mt-1 top-5 left-1/2 -translate-x-1/2 text-[10px] text-text-muted whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity z-20 bg-surface-2 px-1 rounded shadow border border-border">
-                {#if isTestingThis}
-                  Testing...
-                {:else if testStatus === 'ok'}
-                  Passed
-                {:else if testStatus === 'error'}
-                  {modelTestErrors[model.id] || 'Failed'}
-                {:else}
-                  Test
-                {/if}
-              </span>
-            </div>
-            <!-- Copy button -->
-            <div class="relative shrink-0 group/btn">
-              <button
-                type="button"
-                onclick={() => copyModelId(model.id)}
-                class="rounded p-0.5 text-text-muted hover:bg-sidebar hover:text-primary cursor-pointer"
-              >
-                {#if copiedModelId === model.id}
-                  <span class="material-symbols-outlined text-sm text-green-500">check</span>
-                {:else}
-                  <span class="material-symbols-outlined text-sm">content_copy</span>
-                {/if}
-              </button>
-              <span class="pointer-events-none absolute mt-1 top-5 left-1/2 -translate-x-1/2 text-[10px] text-text-muted whitespace-nowrap opacity-0 group-hover/btn:opacity-100 transition-opacity">
-                Copy
-              </span>
             </div>
 
-            <!-- Disable button -->
-            <button
-              type="button"
-              onclick={() => handleDisableModel(model.id)}
-              class="ml-auto rounded p-0.5 text-text-muted opacity-100 transition-opacity hover:bg-red-500/10 hover:text-red-500 sm:opacity-0 sm:group-hover:opacity-100 cursor-pointer"
-              title="Disable this model"
-            >
-              <span class="material-symbols-outlined text-sm">close</span>
-            </button>
-          </div>
-        </div>
-      {/each}
-
-      <!-- Add Model button inside the same flex-wrap -->
-      <button
-        type="button"
-        onclick={() => (showAddCustomModelModal = true)}
-        class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-dashed border-primary/40 px-3 py-2 text-xs text-primary transition-colors hover:border-primary hover:bg-primary/5 sm:w-auto cursor-pointer"
-      >
-        <span class="material-symbols-outlined text-sm">add</span>
-        Add Model
-      </button>
-
-      {#if (providerId === 'cline' || providerId === 'clinepass' || providerId === 'qoder' || providerId === 'qoder-cn') && providerConnections.some((c) => c.isActive !== 0)}
-        <button
-          type="button"
-          onclick={handleImportLiveCatalogModels}
-          disabled={isImportingLiveCatalogModels}
-          class="flex w-full items-center justify-center gap-1.5 rounded-lg border border-border bg-surface-2 hover:bg-surface-3 px-3 py-2 text-xs text-text-main transition-colors sm:w-auto cursor-pointer disabled:opacity-50"
-        >
-          <span class="material-symbols-outlined text-sm">download</span>
-          {isImportingLiveCatalogModels ? 'Fetching...' : 'Import from /models'}
-        </button>
-      {/if}
-    </div>
+            <div class="flex shrink-0 items-center gap-0.5">
+              <button type="button" onclick={() => testModel(model.id)} disabled={isTestingThis}
+                title={isTestingThis ? 'Testing model' : modelTestErrors[model.id] || (testStatus === 'ok' ? 'Test passed' : 'Test model')}
+                aria-label={`Test ${model.id}`}
+                class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:cursor-wait disabled:opacity-60">
+                <Icon name={isTestingThis ? 'spinner' : testStatus === 'ok' ? 'success' : testStatus === 'error' ? 'error' : 'lab'} spin={isTestingThis}
+                  class={testStatus === 'ok' ? 'text-success' : testStatus === 'error' ? 'text-danger' : ''} />
+              </button>
+              <button type="button" onclick={() => copyModelId(model.id)}
+                title={copiedModelId === model.id ? 'Copied' : 'Copy model ID'}
+                aria-label={`Copy ${model.id}`}
+                class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main">
+                <Icon name={copiedModelId === model.id ? 'copied' : 'copy'} class={copiedModelId === model.id ? 'text-success' : ''} />
+              </button>
+              <button type="button" onclick={() => isDisabled ? handleEnableModel(model.id) : handleDisableModel(model.id)}
+                title={isDisabled ? 'Enable model' : 'Disable model'}
+                aria-label={`${isDisabled ? 'Enable' : 'Disable'} ${model.id}`}
+                aria-pressed={!isDisabled}
+                class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main">
+                <Icon name={isDisabled ? 'power' : 'blocked'} class={isDisabled ? 'text-success' : ''} />
+              </button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
     <!-- Suggested models from provider API — show only models not yet added -->
     {#if suggestedNotAdded.length > 0}
       <div class="w-full mt-2">
@@ -3060,24 +3068,6 @@
       </div>
     {/if}
 
-    <!-- Disabled Models pills -->
-    {#if disabledModelIds.length > 0}
-      <div class="w-full mt-4">
-        <p class="text-xs text-text-muted mb-2">Disabled models ({disabledModelIds.length}):</p>
-        <div class="flex flex-wrap gap-2">
-          {#each disabledModelIds as dId}
-            <button
-              type="button"
-              onclick={() => handleEnableModel(dId)}
-              class="flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-black/10 dark:border-white/10 text-xs text-text-muted hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-colors cursor-pointer"
-            >
-              <span class="material-symbols-outlined text-[13px]">add</span>
-              {dId.split('/').pop()}
-            </button>
-          {/each}
-        </div>
-      </div>
-    {/if}
   </div>
   {/if}
 </div>

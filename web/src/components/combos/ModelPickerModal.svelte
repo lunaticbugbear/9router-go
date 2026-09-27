@@ -175,7 +175,7 @@
       <!-- Info bar -->
       <div class="flex items-center gap-2 mb-3 px-2.5 py-2 bg-brand-500/10 border border-brand-500/20 rounded-lg text-xs text-text-muted">
         <Info class="w-3.5 h-3.5 text-brand-500 shrink-0" />
-        <span>Click to add, click again to remove. Changes are saved automatically.</span>
+        <span>Select models to add or remove. Save the route to apply changes.</span>
       </div>
 
       <!-- Search -->

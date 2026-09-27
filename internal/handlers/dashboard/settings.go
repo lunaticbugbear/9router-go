@@ -262,6 +262,7 @@ func (h *DashboardHandler) changeDashboardPassword(currentPassword, newPassword 
 	}
 	return h.Repo.UpdateSettingsRaw(map[string]any{"password": string(hashed)})
 }
+
 // verifyDashboardPassword mirrors Next's verifyDashboardPassword: a stored
 // bcrypt hash wins, otherwise INITIAL_PASSWORD wins, otherwise the well-known
 // "123456" default (upstream DEFAULT_PASSWORD) is accepted.
@@ -289,8 +290,8 @@ func trustedRequest(r *http.Request) bool {
 	return auth.ValidCLIToken(r.Header.Get(cliTokenHeader))
 }
 
-// sanitizeSettings copies settings and drops secrets, exposing `hasPassword`
-// the way the Next dashboard does.
+// sanitizeSettings copies settings and drops secrets, exposing password state
+// without returning a stored hash or the configured INITIAL_PASSWORD.
 func sanitizeSettings(raw map[string]any) map[string]any {
 	if raw == nil {
 		raw = map[string]any{}
@@ -299,14 +300,12 @@ func sanitizeSettings(raw map[string]any) map[string]any {
 	for k, v := range raw {
 		out[k] = v
 	}
-	hasPassword := false
-	if hash, ok := raw["password"].(string); ok && hash != "" {
-		hasPassword = true
-	}
+	hasPassword, usesDefaultPassword := dashboardPasswordStatus(raw)
 	for _, key := range secretSettingKeys {
 		delete(out, key)
 	}
 	out["hasPassword"] = hasPassword
+	out["usesDefaultPassword"] = usesDefaultPassword
 	return out
 }
 

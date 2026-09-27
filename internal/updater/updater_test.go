@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 )
 
 func TestCompareVersions(t *testing.T) {
@@ -48,6 +49,50 @@ func TestGetCachedInfo(t *testing.T) {
 	}
 }
 
+func TestCheckUpdate_DisabledWithoutExplicitSource(t *testing.T) {
+	t.Setenv("UPDATE_URL", "")
+	t.Setenv("UPDATE_REPO", "")
+	cacheMu.Lock()
+	cachedInfo = &UpdateInfo{CurrentVersion: CurrentVersion, LatestVersion: "99.0.0", HasUpdate: true, DownloadURL: "https://example.invalid/update"}
+	lastCheckTime = time.Now()
+	cacheMu.Unlock()
+
+	info, err := CheckUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("CheckUpdate() error = %v", err)
+	}
+	if info.Source != "disabled" {
+		t.Errorf("Source = %q, want disabled", info.Source)
+	}
+	if info.HasUpdate {
+		t.Error("HasUpdate = true, want false when no source is configured")
+	}
+	if info.CurrentVersion != info.LatestVersion {
+		t.Errorf("local version mismatch: current=%q latest=%q", info.CurrentVersion, info.LatestVersion)
+	}
+	if info.DownloadURL != "" {
+		t.Errorf("DownloadURL = %q, want empty when updates are disabled", info.DownloadURL)
+	}
+	if cached := GetCachedInfo(); cached.HasUpdate || cached.LatestVersion != CurrentVersion {
+		t.Errorf("disabled cached info = %+v, want only the local version", cached)
+	}
+	if status := GetStatus(); status.HasUpdate || status.AutoUpdateEnabled {
+		t.Errorf("disabled updater status = %+v, want no update and auto-update off", status)
+	}
+}
+
+func TestStartBackgroundCheck_DisabledWithoutSource(t *testing.T) {
+	t.Setenv("UPDATE_URL", "")
+	t.Setenv("UPDATE_REPO", "")
+	SetAutoUpdate(true)
+
+	StartBackgroundCheck(context.Background(), true)
+
+	if IsAutoUpdateEnabled() {
+		t.Error("auto-update must stay disabled without an explicit source")
+	}
+}
+
 func TestCheckUpdate_Manifest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		manifest := map[string]any{
@@ -63,6 +108,7 @@ func TestCheckUpdate_Manifest(t *testing.T) {
 
 	os.Setenv("UPDATE_URL", server.URL)
 	defer os.Unsetenv("UPDATE_URL")
+	t.Setenv("UPDATE_REPO", "")
 
 	info, err := CheckUpdate(context.Background())
 	if err != nil {
@@ -208,6 +254,8 @@ func TestMatchReleaseAsset(t *testing.T) {
 }
 
 func TestAutoUpdate_StatusAndToggle(t *testing.T) {
+	t.Setenv("UPDATE_URL", "https://updates.example.test/manifest")
+	t.Setenv("UPDATE_REPO", "")
 	SetAutoUpdate(true)
 	if !IsAutoUpdateEnabled() {
 		t.Errorf("expected autoUpdate to be true")

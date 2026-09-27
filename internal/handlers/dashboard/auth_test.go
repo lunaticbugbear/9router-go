@@ -134,6 +134,51 @@ func TestHandleAuthStatus_SessionRoundTrip(t *testing.T) {
 	}
 }
 
+func TestHandleAuthStatus_PasswordSource(t *testing.T) {
+	tests := []struct {
+		name            string
+		initial         string
+		stored          bool
+		wantHasPassword bool
+		wantUsesDefault bool
+	}{
+		{name: "default fallback", wantUsesDefault: true},
+		{name: "environment password", initial: "env-password", wantHasPassword: true},
+		{name: "stored password", stored: true, wantHasPassword: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			authTestEnv(t)
+			t.Setenv("INITIAL_PASSWORD", tt.initial)
+			repo, cleanup := setupTestDB(t)
+			defer cleanup()
+			if tt.stored {
+				storePassword(t, repo, "stored-password")
+			}
+
+			rec := httptest.NewRecorder()
+			NewDashboardHandler(repo).HandleAuthStatus(rec, httptest.NewRequest(http.MethodGet, "/api/auth/status", nil))
+			var status map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &status); err != nil {
+				t.Fatalf("decode auth status: %v", err)
+			}
+			if got := status["hasPassword"]; got != tt.wantHasPassword {
+				t.Errorf("hasPassword = %v, want %v", got, tt.wantHasPassword)
+			}
+			if got := status["usesDefaultPassword"]; got != tt.wantUsesDefault {
+				t.Errorf("usesDefaultPassword = %v, want %v", got, tt.wantUsesDefault)
+			}
+			if _, leaked := status["password"]; leaked {
+				t.Error("auth status must not return the password hash")
+			}
+			if _, leaked := status["initialPassword"]; leaked {
+				t.Error("auth status must not return INITIAL_PASSWORD")
+			}
+		})
+	}
+}
+
 func TestHandleRequireLogin_ReflectsSetting(t *testing.T) {
 	authTestEnv(t)
 	repo, cleanup := setupTestDB(t)

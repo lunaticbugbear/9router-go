@@ -118,6 +118,7 @@ export interface Settings {
   /** Dashboard security & SSO (profile page, Next parity). */
   requireLogin?: boolean
   hasPassword?: boolean
+  usesDefaultPassword?: boolean
   authMode?: string
   ssoType?: string
   oidcIssuerUrl?: string
@@ -344,6 +345,7 @@ export interface RequireLoginResponse {
   tunnelUrl?: string
   tailscaleUrl?: string
   hasPassword?: boolean
+  usesDefaultPassword?: boolean
   authMode?: string
   authenticated?: boolean
 }
@@ -402,6 +404,14 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 // Connections API
+export interface CliToolStatus {
+  installed?: boolean
+  version?: string | null
+  has9Router?: boolean
+  configPath?: string
+  installer?: boolean
+}
+
 export const api = {
   // Connections
   getConnections: async () => {
@@ -585,9 +595,16 @@ export const api = {
       method: 'DELETE',
     }),
   testModel: (model: string) =>
-    request<{ ok: boolean; error?: string }>('/api/models/test', {
+    request<{ ok: boolean; error?: string }>('/api/dashboard/models/test', {
       method: 'POST',
       body: JSON.stringify({ model }),
+    }),
+  getDashboardModels: () =>
+    request<{ data: Array<{ id: string; owned_by?: string }> }>('/api/dashboard/models'),
+  askCliToolSetup: (payload: { model: string; tool: string; context: string; question?: string }) =>
+    request<{ answer: string; model: string }>('/api/dashboard/cli-tools/assist', {
+      method: 'POST',
+      body: JSON.stringify(payload),
     }),
 
   // Bug bounty: program scope context is applied only when a client explicitly
@@ -783,17 +800,6 @@ export const api = {
       body: JSON.stringify({ code, codeVerifier }),
     }),
   getSystemVersion: () => request<SystemVersionInfo>('/api/version'),
-  checkUpdate: () => request<SystemVersionInfo>('/api/version/check'),
-  triggerUpdate: () =>
-    request<{ status: string; message?: string; version?: string }>('/api/version/update', {
-      method: 'POST',
-      body: JSON.stringify({}),
-    }),
-  shutdownServer: () =>
-    request<{ success?: boolean; status?: string; message?: string }>('/api/version/shutdown', {
-      method: 'POST',
-      body: JSON.stringify({}),
-    }),
   getChangelog: async (): Promise<string> => {
     try {
       const res = await fetch('/api/changelog', { headers: getAuthHeaders() })
@@ -831,27 +837,19 @@ export const api = {
     return { connections: conns }
   },
   // Paginated provider fetch with filters (mirrors Next.js /api/providers/client).
-  // The Go backend currently returns the full list; pagination is applied client-side.
-  getProvidersClientPage: async (
+  getProvidersClientPage: (
     query: string,
   ): Promise<{
     connections: ProviderConnection[]
     providerOptions?: string[]
     pagination?: { page: number; pageSize: number; total: number; totalPages: number }
     totals?: { eligibleConnections: number; providerFilteredConnections: number }
-  }> => {
-    try {
-      const res = await request<{
-        connections: ProviderConnection[]
-        providerOptions?: string[]
-        pagination?: { page: number; pageSize: number; total: number; totalPages: number }
-        totals?: { eligibleConnections: number; providerFilteredConnections: number }
-      }>(`/api/providers/client${query ? `?${query}` : ''}`)
-      if (res && res.connections) return res
-    } catch {}
-    const fallback = await api.getProvidersClient()
-    return { connections: fallback.connections }
-  },
+  }> => request<{
+    connections: ProviderConnection[]
+    providerOptions?: string[]
+    pagination?: { page: number; pageSize: number; total: number; totalPages: number }
+    totals?: { eligibleConnections: number; providerFilteredConnections: number }
+  }>(`/api/providers/client${query ? `?${query}` : ''}`),
   getConnectionUsage: async (connectionId: string, force = false): Promise<ConnectionUsageResponse> => {
     return request<ConnectionUsageResponse>(`/api/usage/${encodeURIComponent(connectionId)}${force ? '?force=1' : ''}`)
   },
@@ -952,9 +950,19 @@ export const api = {
 
   // CLI Tools status
   getCliToolsStatuses: () =>
-    request<Record<string, { installed?: boolean; version?: string | null; has9Router?: boolean } | null>>(
+    request<Record<string, CliToolStatus | null>>(
       '/api/cli-tools/all-statuses'
-    ).catch(() => ({})),
+    ),
+  configureCliTool: (tool: string, payload: { baseUrl: string; models: string[] }) =>
+    request<{ success: boolean; message: string; configPath: string; backupPath?: string; keyCreated?: boolean }>(
+      `/api/cli-tools/${encodeURIComponent(tool)}/configure`,
+      { method: 'POST', body: JSON.stringify(payload) }
+    ),
+  resetCliTool: (tool: string) =>
+    request<{ success: boolean; message: string; configPath?: string }>(
+      `/api/cli-tools/${encodeURIComponent(tool)}/configure`,
+      { method: 'DELETE' }
+    ),
   // Auth
   checkRequireLogin: async (): Promise<RequireLoginResponse> => {
     try {
@@ -966,6 +974,8 @@ export const api = {
           tunnelDashboardAccess: !!data.tunnelDashboardAccess,
           tunnelUrl: data.tunnelUrl,
           tailscaleUrl: data.tailscaleUrl,
+          hasPassword: !!data.hasPassword,
+          usesDefaultPassword: !!data.usesDefaultPassword,
           authenticated: !!data.authenticated,
         }
       }
@@ -977,6 +987,7 @@ export const api = {
         return {
           requireLogin: !!data.requireLogin,
           hasPassword: !!data.hasPassword,
+          usesDefaultPassword: !!data.usesDefaultPassword,
           authMode: data.authMode,
           authenticated: !!data.authenticated,
         }

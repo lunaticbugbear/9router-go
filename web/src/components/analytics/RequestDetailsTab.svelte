@@ -11,6 +11,8 @@
     detailsTotal?: number
     detailsPage?: number
     detailsLoading?: boolean
+    /** Set when the last fetch failed, so an outage is not shown as "no logs". */
+    error?: string
     onPageChange: (page: number) => void
     onRefresh: () => void
   }
@@ -20,6 +22,7 @@
     detailsTotal = 0,
     detailsPage = 1,
     detailsLoading = false,
+    error = '',
     onPageChange,
     onRefresh,
   }: Props = $props()
@@ -39,12 +42,19 @@
     </Button>
   </div>
 
+  {#if error}
+    <div class="flex flex-wrap items-center justify-between gap-2 border-b border-danger/40 bg-danger/10 px-5 py-3 text-xs text-danger" role="alert">
+      <span class="min-w-0 truncate">Could not load request history — {error}</span>
+      <Button variant="secondary" size="sm" onclick={onRefresh} disabled={detailsLoading}>Retry</Button>
+    </div>
+  {/if}
+
   {#if detailsLoading}
     <div class="p-12 text-center text-text-muted text-sm flex items-center justify-center gap-2">
       <span class="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></span>
       <span>Loading request history...</span>
     </div>
-  {:else if details.length === 0}
+  {:else if details.length === 0 && !error}
     <div class="p-12 text-center text-text-muted text-sm">
       No request logs found in the database.
     </div>

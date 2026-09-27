@@ -1,17 +1,6 @@
 <script lang="ts">
-  import {
-    Check,
-    Copy,
-    Eye,
-    Gavel,
-    Layers,
-    Pencil,
-    Sparkles,
-    Trash2,
-    X
-  } from 'lucide-svelte'
   import type { Combo } from '../../api/client'
-  import Card from '../../lib/ui/Card.svelte'
+  import Icon from '../../lib/ui/Icon.svelte'
   import {
     getComboModels,
     hasReasoning,
@@ -47,118 +36,82 @@
   let currentStrategy = $derived(strategyInfo.fallbackStrategy || combo.strategy || 'fallback')
   let judgeModel = $derived(strategyInfo.judgeModel || '')
   let isFusion = $derived(currentStrategy === 'fusion')
+  let strategySummary = $derived(
+    currentStrategy === 'round-robin'
+      ? 'Rotate requests across this list.'
+      : isFusion
+        ? 'Run all models in parallel; the judge combines responses.'
+        : 'Try in order and move on when a model fails.'
+  )
 </script>
 
-<Card padding="sm" class="group">
-  <div class="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-    <!-- Left: Icon, Name, Model Badges & Fusion Judge -->
-    <div class="flex min-w-0 flex-1 items-start gap-3 sm:items-center">
-      <div class="size-8 rounded-lg bg-brand-500/10 flex items-center justify-center shrink-0">
-        <Layers class="w-4 h-4 text-brand-500" />
-      </div>
-      <div class="min-w-0 flex-1">
-        <code class="block truncate font-mono text-sm font-medium text-text-main">{combo.name}</code>
-        <div class="mt-1 flex min-w-0 flex-wrap items-center gap-1">
-          {#if modelsList.length === 0}
-            <span class="text-xs text-text-muted italic">No models</span>
-          {:else}
-            {#each modelsList.slice(0, 3) as model}
-              <code class="inline-flex items-center gap-1 rounded bg-black/5 dark:bg-white/5 px-1.5 py-0.5 font-mono text-xs text-text-muted">
-                <span>{model}</span>
-                {#if hasVision(model)}
-                  <Eye class="w-3 h-3 text-blue-500 shrink-0" title="Vision — Supports image input" />
-                {/if}
-                {#if hasReasoning(model)}
-                  <Sparkles class="w-3 h-3 text-amber-500 shrink-0" title="Reasoning — Supports reasoning / thinking" />
-                {/if}
-              </code>
-            {/each}
-            {#if modelsList.length > 3}
-              <span class="text-[10px] text-text-muted">+{modelsList.length - 3} more</span>
-            {/if}
-          {/if}
-        </div>
-
-        <!-- Fusion: judge picker (Auto = first model) -->
-        {#if isFusion}
-          <div class="mt-2 flex min-w-0 flex-wrap items-center gap-1.5">
-            <span class="text-[11px] font-medium text-text-muted">Judge</span>
-            <button
-              type="button"
-              onclick={() => onOpenJudgePicker(combo)}
-              class="inline-flex max-w-full items-center gap-1 rounded border border-dashed border-brand-500/40 px-1.5 py-0.5 font-mono text-[11px] text-brand-500 hover:border-brand-500 hover:bg-brand-500/5 transition-colors cursor-pointer"
-              title="Pick the model that fuses panel answers"
-            >
-              <Gavel class="w-3 h-3" />
-              <span class="truncate">{judgeModel || `Auto — ${modelsList[0] || 'first model'}`}</span>
-            </button>
-            {#if judgeModel}
-              <button
-                type="button"
-                onclick={() => onClearJudge(combo.name)}
-                class="p-0.5 rounded text-text-muted hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
-                title="Reset judge to Auto"
-              >
-                <X class="w-3 h-3" />
-              </button>
-            {/if}
-          </div>
-        {/if}
-      </div>
+<article class="grid gap-4 py-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] lg:gap-8">
+  <div class="min-w-0">
+    <div class="flex items-center gap-2">
+      <Icon name="route" class="text-brass" />
+      <code class="truncate font-code text-sm font-medium text-text-main">{combo.name}</code>
+      <button type="button" onclick={() => onCopy(combo.name, combo.id)}
+        title={copiedId === combo.id ? 'Copied' : 'Copy combo name'}
+        aria-label={copiedId === combo.id ? 'Copied' : `Copy ${combo.name}`}
+        class="flex size-8 shrink-0 cursor-pointer items-center justify-center rounded-brand text-text-muted hover:bg-surface-2 hover:text-text-main">
+        <Icon name={copiedId === combo.id ? 'check' : 'copy'} size={16} />
+      </button>
     </div>
-
-    <!-- Actions: Strategy selector + Copy/Edit/Delete -->
-    <div class="flex w-full flex-col gap-2 sm:w-auto sm:flex-row sm:items-center sm:gap-3 sm:shrink-0">
-      <!-- Strategy dropdown -->
-      <div class="w-full sm:w-[200px]">
-        <select
-          value={currentStrategy}
-          onchange={(e) => onSetStrategy(combo, e.currentTarget.value)}
-          class="w-full bg-surface-2 border border-border rounded-lg px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:border-brand-500 cursor-pointer font-body"
-        >
-          <option value="fallback">Fallback — try in order</option>
-          <option value="round-robin">Round Robin — rotate</option>
-          <option value="fusion">Fusion — panel + judge</option>
-        </select>
-      </div>
-
-      <!-- Icon buttons with labels -->
-      <div class="grid grid-cols-3 gap-1 sm:flex sm:items-center">
-        <button
-          type="button"
-          onclick={() => onCopy(combo.name, combo.id)}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-1 text-text-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer"
-          title="Copy combo name"
-        >
-          {#if copiedId === combo.id}
-            <Check class="w-4 h-4 text-success" />
-            <span class="text-[10px] leading-tight text-success font-medium">Copied</span>
-          {:else}
-            <Copy class="w-4 h-4" />
-            <span class="text-[10px] leading-tight">Copy</span>
-          {/if}
-        </button>
-
-        <button
-          type="button"
-          onclick={() => onEdit(combo)}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-1 text-text-muted transition-colors hover:bg-black/5 dark:hover:bg-white/5 hover:text-brand-500 cursor-pointer"
-          title="Edit"
-        >
-          <Pencil class="w-4 h-4" />
-          <span class="text-[10px] leading-tight">Edit</span>
-        </button>
-
-        <button
-          type="button"
-          onclick={() => onDelete(combo)}
-          class="flex flex-col items-center justify-center rounded px-2.5 py-1 text-red-500 transition-colors hover:bg-red-500/10 cursor-pointer"
-          title="Delete"
-        >
-          <Trash2 class="w-4 h-4" />
-          <span class="text-[10px] leading-tight">Delete</span>
-        </button>
-      </div>
+    <div class="mt-3 flex flex-wrap items-center gap-2">
+      <label for="strategy-{combo.id}" class="ui-kicker">Strategy</label>
+      <select id="strategy-{combo.id}" value={currentStrategy}
+        onchange={(event) => onSetStrategy(combo, event.currentTarget.value)}
+        class="ui-input min-w-40 cursor-pointer font-code text-xs">
+        <option value="fallback">Fallback</option>
+        <option value="round-robin">Round robin</option>
+        <option value="fusion">Fusion</option>
+      </select>
+    </div>
+    <p class="mt-1 text-[11px] leading-relaxed text-text-muted">{strategySummary}</p>
+    <div class="mt-3 flex items-center gap-1">
+      <button type="button" onclick={() => onEdit(combo)} title={`Edit ${combo.name}`} aria-label={`Edit ${combo.name}`}
+        class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted hover:bg-surface-2 hover:text-text-main">
+        <Icon name="edit" size={16} />
+      </button>
+      <button type="button" onclick={() => onDelete(combo)} title={`Delete ${combo.name}`} aria-label={`Delete ${combo.name}`}
+        class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-danger hover:bg-danger/10">
+        <Icon name="delete" size={16} />
+      </button>
     </div>
   </div>
-</Card>
+
+  <div class="min-w-0 border-l border-border-subtle pl-4">
+    <p class="ui-kicker mb-2 text-text-subtle">
+      {isFusion ? 'Panel models' : currentStrategy === 'round-robin' ? 'Rotation order' : 'Fallback order'}
+    </p>
+    {#if modelsList.length === 0}
+      <p class="text-xs text-warning">No models. This combo cannot route requests.</p>
+    {:else}
+      <ol class="divide-y divide-border-subtle">
+        {#each modelsList as model, index (model)}
+          <li class="flex min-w-0 items-center gap-3 py-2 first:pt-0">
+            <span class="w-5 shrink-0 font-code text-[11px] text-brass">{String(index + 1).padStart(2, '0')}</span>
+            <code class="min-w-0 flex-1 break-all font-code text-xs text-text-main">{model}</code>
+            {#if hasVision(model)}<Icon name="eye" size={14} class="text-info" label="Vision" />{/if}
+            {#if hasReasoning(model)}<Icon name="sparkles" size={14} class="text-warning" label="Reasoning" />{/if}
+          </li>
+        {/each}
+      </ol>
+    {/if}
+    {#if isFusion}
+      <div class="flex flex-wrap items-center gap-2 border-t border-border-subtle pt-2">
+        <span class="ui-kicker">Judge</span>
+        <button type="button" onclick={() => onOpenJudgePicker(combo)} title="Choose judge model"
+          class="min-w-0 cursor-pointer truncate font-code text-xs text-primary hover:underline">
+          {judgeModel || `Auto · ${modelsList[0] || 'first model'}`}
+        </button>
+        {#if judgeModel}
+          <button type="button" onclick={() => onClearJudge(combo.name)} title="Reset judge to Auto" aria-label="Reset judge to Auto"
+            class="flex size-8 cursor-pointer items-center justify-center rounded-brand text-text-muted hover:bg-surface-2">
+            <Icon name="close" size={14} />
+          </button>
+        {/if}
+      </div>
+    {/if}
+  </div>
+</article>

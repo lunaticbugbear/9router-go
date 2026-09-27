@@ -55,6 +55,14 @@ func SchemaStatements() []string {
 			createdAt TEXT NOT NULL,
 			updatedAt TEXT NOT NULL
 		)`,
+		`CREATE TABLE IF NOT EXISTS proxyPools (
+			id TEXT PRIMARY KEY,
+			isActive INTEGER DEFAULT 1,
+			testStatus TEXT,
+			data TEXT NOT NULL,
+			createdAt TEXT NOT NULL,
+			updatedAt TEXT NOT NULL
+		)`,
 		`CREATE TABLE IF NOT EXISTS usageHistory (
 			timestamp TEXT,
 			provider TEXT,

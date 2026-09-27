@@ -2,6 +2,7 @@
   import { onMount } from 'svelte'
   import { api, type APIKey, type Combo, type ProviderConnection, type ProviderNode, type Settings } from '../../api/client'
   import { getProvidersByKind, type ProviderCatalogItem } from '../../lib/providers'
+  import { notifications } from '../../lib/notifications'
   import Badge from '../../lib/ui/Badge.svelte'
   import Card from '../../lib/ui/Card.svelte'
   import AddCompatibleNodeModal from '../connections/AddCompatibleNodeModal.svelte'
@@ -77,9 +78,17 @@
 
   async function handleToggleProvider(providerId: string, newActive: boolean) {
     const list = connections.filter((c) => c.provider === providerId)
-    await Promise.allSettled(
+    const results = await Promise.allSettled(
       list.map((c) => api.updateConnection(c.id, { isActive: newActive ? 1 : 0 }))
     )
+    const failedCount = results.filter((result) => result.status === 'rejected').length
+    if (failedCount > 0) {
+      notifications.error(
+        failedCount === list.length
+          ? `Could not update ${providerId} connections.`
+          : `${failedCount} of ${list.length} ${providerId} connections could not be updated.`,
+      )
+    }
     onRefresh()
   }
 

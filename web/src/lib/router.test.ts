@@ -4,9 +4,10 @@ import { mediaProviderPath, parseMediaProvider, parseProviderId, pathToTab, prov
 describe('router', () => {
   it('maps all upstream routes correctly', () => {
     expect(pathToTab('/login')).toBe('login')
+    expect(pathToTab('/dashboard/overview')).toBe('overview')
     expect(pathToTab('/dashboard/endpoint')).toBe('endpoint')
-    expect(pathToTab('/dashboard')).toBe('endpoint')
-    expect(pathToTab('/')).toBe('endpoint')
+    expect(pathToTab('/dashboard')).toBe('overview')
+    expect(pathToTab('/')).toBe('overview')
     expect(pathToTab('/dashboard/providers')).toBe('connections')
     expect(pathToTab('/dashboard/combos')).toBe('combos')
     expect(pathToTab('/dashboard/usage')).toBe('analytics')
@@ -29,6 +30,7 @@ describe('router', () => {
   })
 
   it('has canonical routes for all tabs in TAB_ROUTES', () => {
+    expect(TAB_ROUTES.overview).toBe('/dashboard/overview')
     expect(TAB_ROUTES.endpoint).toBe('/dashboard/endpoint')
     expect(TAB_ROUTES.connections).toBe('/dashboard/providers')
     expect(TAB_ROUTES.combos).toBe('/dashboard/combos')

@@ -61,8 +61,12 @@ func main() {
 		Commands: []*cli.Command{
 			{
 				Name:  "version",
-				Usage: "Display version details and check for updates",
+				Usage: "Display version details; remote checks require UPDATE_URL or UPDATE_REPO",
 				Action: func(cCtx *cli.Context) error {
+					if !updater.HasUpdateSource() {
+						fmt.Printf("9router-go version %s (%s/%s)\nRemote update checks are disabled for this build.\n", updater.CurrentVersion, runtime.GOOS, runtime.GOARCH)
+						return nil
+					}
 					info, err := updater.CheckUpdate(cCtx.Context)
 					if err != nil {
 						fmt.Printf("9router-go version %s (%s/%s)\nUpdate check failed: %v\n", updater.CurrentVersion, runtime.GOOS, runtime.GOARCH, err)
@@ -80,8 +84,11 @@ func main() {
 			},
 			{
 				Name:  "update",
-				Usage: "Check and perform self-update to the latest version",
+				Usage: "Update from an explicitly configured UPDATE_URL or UPDATE_REPO",
 				Action: func(cCtx *cli.Context) error {
+					if !updater.HasUpdateSource() {
+						return cli.Exit("self-update is disabled for this build; configure UPDATE_URL or UPDATE_REPO to opt in", 1)
+					}
 					fmt.Printf("Checking for updates (current: %s)...\n", updater.CurrentVersion)
 					info, err := updater.CheckUpdate(cCtx.Context)
 					if err != nil {

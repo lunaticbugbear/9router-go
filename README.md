@@ -24,7 +24,7 @@ All-in-one AI gateway in Go: high-throughput LLM proxy **plus built-in dashboard
 - **Client cloaking**: official-CLI headers/identities per provider (no router branding on the wire)
 - **Proxy pools**: HTTP/SOCKS5 rotation + Vercel/Cloudflare/Deno edge relays; no-auth provider strategies
 - **Media**: image, video, TTS/STT, web search/fetch endpoints
-- **Ops**: SQLite WAL (shared schema), live console log SSE, auto-update, Docker + cross-compile
+- **Ops**: SQLite WAL (shared schema), live console log SSE, opt-in custom update source, Docker + cross-compile
 
 ## Architecture
 
@@ -124,9 +124,10 @@ curl http://localhost:20130/health
 ```
 
 Flags: `--port` (default: `PORT` env, else `20130`) and `--host` (default:
-`HOST` env; empty binds all interfaces). Existing flags `--rtk`, `--caveman`,
-`--ponytail`, `--auto-update`, `--no-injection-guard` are unchanged, and the
-`version`, `update`, and `mitm` subcommands are unaffected by the launcher.
+`HOST` env; empty binds all interfaces). `--auto-update` only applies when an
+operator explicitly configures `UPDATE_URL` or `UPDATE_REPO`; without either,
+the gateway does not poll releases or download a binary. The `version` command
+prints the local version in that default mode, and `update` refuses to run.
 
 ### Operator commands
 
@@ -199,8 +200,9 @@ Behaviour that matters:
 
 > **Windows Defender / SmartScreen flags the `.exe`?** Release binaries are
 > unsigned, so a fresh release can trip a heuristic false positive (the
-> built-in auto-updater also downloads and replaces its own binary, which
-> looks downloader-like to heuristics). Verify integrity first with
+> gateway does not poll or install GitHub releases by default. Self-update is
+> only available when an operator explicitly sets `UPDATE_URL` or `UPDATE_REPO`.
+> For a manually downloaded release, verify integrity first with
 > `certutil -hashfile 9router-go-windows-amd64.exe SHA256` against
 > `SHA256SUMS.txt` from the same release, then allow it via
 > *Virus & threat protection → Protection history → Allow*.

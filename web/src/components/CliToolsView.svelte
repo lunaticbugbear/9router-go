@@ -14,28 +14,32 @@
     RefreshCw,
     Search,
     Shield,
+    Sparkles,
     Terminal,
     Wrench,
     X,
     Zap
   } from 'lucide-svelte'
   import Card from '../lib/ui/Card.svelte'
-  import { api, type APIKey } from '../api/client'
+  import { api, type APIKey, type CliToolStatus, type ProviderConnection } from '../api/client'
 
   interface Props {
     apiKeys?: APIKey[]
+    connections?: ProviderConnection[]
     onRefresh?: () => void
   }
 
   let {
     apiKeys = [],
+    connections = [],
     onRefresh
   }: Props = $props()
 
-  let statuses = $state<Record<string, { installed?: boolean; version?: string | null; has9Router?: boolean } | null>>({})
+  let statuses = $state<Record<string, CliToolStatus | null>>({})
   let isLoading = $state(true)
+  let loadError = $state('')
   let searchQuery = $state('')
-  let activeCategory = $state<'all' | 'cli' | 'ide' | 'mitm'>('all')
+  let activeCategory = $state<'all' | 'installed' | 'cli' | 'ide' | 'mitm'>('all')
   let copiedSnippetId = $state<string | null>(null)
   // SSR fallback uses the Go default port 20130; live origin wins on mount.
   let localOrigin = $state(typeof window !== 'undefined' ? window.location.origin : 'http://localhost:20130')
@@ -48,8 +52,11 @@
 
   async function loadStatuses() {
     isLoading = true
+    loadError = ''
     try {
       statuses = await api.getCliToolsStatuses()
+    } catch (error) {
+      loadError = error instanceof Error ? error.message : String(error)
     } finally {
       isLoading = false
     }
@@ -67,6 +74,136 @@
     envVars?: Record<string, string>
     instructions?: string[]
     defaultKey?: string
+  }
+
+  let selectedTool = $state<ToolItem | null>(null)
+
+  const AI_MODEL_STORAGE_KEY = '9router_cli_assist_model'
+  let hasActiveProvider = $derived(connections.some((c) => Number(c.isActive) === 1))
+  let aiModels = $state<string[]>([])
+  let aiModelsState = $state<'idle' | 'loading' | 'ready' | 'error'>('idle')
+  let aiModel = $state(typeof window !== 'undefined' ? localStorage.getItem(AI_MODEL_STORAGE_KEY) || '' : '')
+  let aiQuestion = $state('')
+  let aiAnswer = $state('')
+  let aiAnswerModel = $state('')
+  let aiError = $state('')
+  let aiLoading = $state(false)
+
+  $effect(() => {
+    if (!selectedTool) return
+    aiAnswer = ''
+    aiError = ''
+    aiQuestion = ''
+    installMessage = ''
+    installError = ''
+    if (hasActiveProvider && aiModelsState === 'idle') void loadAiModels()
+  })
+
+  // One-click installer: writes the gateway into the tool's own config file.
+  const MODEL_OPTIONAL_TOOLS = new Set(['claude'])
+  let installBusy = $state<'apply' | 'reset' | null>(null)
+  let installMessage = $state('')
+  let installError = $state('')
+
+  async function applyInstaller(tool: ToolItem) {
+    if (installBusy) return
+    const model = aiModel.trim()
+    if (!model && !MODEL_OPTIONAL_TOOLS.has(tool.id)) {
+      installError = 'Pick a model first.'
+      return
+    }
+    installBusy = 'apply'
+    installError = ''
+    installMessage = ''
+    try {
+      if (model) localStorage.setItem(AI_MODEL_STORAGE_KEY, model)
+      const res = await api.configureCliTool(tool.id, { baseUrl: localOrigin, models: model ? [model] : [] })
+      installMessage = [
+        res.message,
+        `Config: ${res.configPath}`,
+        res.backupPath ? `Original backed up to ${res.backupPath}` : '',
+        res.keyCreated ? 'Created an API key “CLI tools (auto)” for this tool.' : '',
+      ].filter(Boolean).join('\n')
+      await loadStatuses()
+      if (res.keyCreated) onRefresh?.()
+    } catch (err) {
+      installError = err instanceof Error ? err.message : String(err)
+    } finally {
+      installBusy = null
+    }
+  }
+
+  async function resetInstaller(tool: ToolItem) {
+    if (installBusy || !confirm(`Remove the 9router settings from ${tool.name}? Other settings are kept.`)) return
+    installBusy = 'reset'
+    installError = ''
+    installMessage = ''
+    try {
+      const res = await api.resetCliTool(tool.id)
+      installMessage = res.message
+      await loadStatuses()
+    } catch (err) {
+      installError = err instanceof Error ? err.message : String(err)
+    } finally {
+      installBusy = null
+    }
+  }
+
+  async function loadAiModels() {
+    aiModelsState = 'loading'
+    try {
+      const res = await api.getDashboardModels()
+      aiModels = [...new Set((res.data || []).map((m) => m.id).filter(Boolean))]
+      if (!aiModels.includes(aiModel)) aiModel = aiModels[0] || ''
+      aiModelsState = 'ready'
+    } catch (err) {
+      aiModelsState = 'error'
+      aiError = `Could not load models — ${err instanceof Error ? err.message : String(err)}`
+    }
+  }
+
+  function buildToolContext(tool: ToolItem): string {
+    const s = statuses[tool.id]
+    const lines = [
+      `Gateway base URL: ${localOrigin} (OpenAI-compatible endpoint: ${localOrigin}/v1)`,
+      `Tool category: ${tool.category}; configuration style: ${tool.configType}`,
+      `Host platform: ${typeof navigator !== 'undefined' ? navigator.platform : 'unknown'}`,
+      s
+        ? `Detected on this host: ${s.installed ? `installed${s.version ? ` (version ${s.version})` : ''}` : 'not installed'}; ${s.has9Router ? 'already points at 9router' : 'not yet pointed at 9router'}`
+        : 'Install status: not detected by the scanner',
+    ]
+    if (tool.envVars) {
+      lines.push('Environment variables:')
+      for (const [key, val] of Object.entries(tool.envVars)) {
+        lines.push(`${key}=${/KEY|TOKEN|SECRET/i.test(key) ? '<your-api-key>' : val}`)
+      }
+    }
+    if (tool.instructions?.length) {
+      lines.push('Documented steps:', ...tool.instructions.map((step, i) => `${i + 1}. ${step}`))
+    }
+    return lines.join('\n').slice(0, 7900)
+  }
+
+  async function askAi() {
+    if (!selectedTool || !aiModel.trim() || aiLoading) return
+    aiLoading = true
+    aiError = ''
+    aiAnswer = ''
+    try {
+      localStorage.setItem(AI_MODEL_STORAGE_KEY, aiModel.trim())
+      const res = await api.askCliToolSetup({
+        model: aiModel.trim(),
+        tool: selectedTool.name,
+        context: buildToolContext(selectedTool),
+        question: aiQuestion.trim() || undefined,
+      })
+      aiAnswer = res.answer
+      aiAnswerModel = res.model
+    } catch (err) {
+      aiError = err instanceof Error ? err.message : String(err)
+    } finally {
+      aiLoading = false
+    }
   }
 
   let toolsCatalog: ToolItem[] = $derived.by(() => [
@@ -130,7 +267,7 @@
       configType: 'mitm',
       instructions: [
         'Antigravity MITM intercepts Google Cloud Code PA traffic transparently.',
-        `Point HTTP_PROXY or system proxy to 9router-go on port 20130.`,
+        `Point HTTP_PROXY or system proxy to ${localOrigin}.`,
         'All tools with _ide suffixes will be seamlessly uncloaked and routed to configured connections.',
       ],
     },
@@ -391,7 +528,9 @@
   ])
   let filteredTools = $derived(
     toolsCatalog.filter((tool) => {
-      const matchCategory = activeCategory === 'all' || tool.category === activeCategory
+      const matchCategory =
+        activeCategory === 'all' ||
+        (activeCategory === 'installed' ? statuses[tool.id]?.installed === true : tool.category === activeCategory)
       const matchSearch =
         !searchQuery.trim() ||
         tool.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
@@ -399,6 +538,8 @@
       return matchCategory && matchSearch
     })
   )
+
+  let installedCount = $derived(toolsCatalog.filter((tool) => statuses[tool.id]?.installed === true).length)
 
   let effectiveApiKey = $derived(apiKeys[0]?.key || 'sk-8b71f86e0a1f2fb5-nhz496-cfa1c800')
 
@@ -455,6 +596,13 @@
     </button>
   </div>
 
+  {#if loadError}
+    <div class="flex flex-wrap items-center justify-between gap-2 rounded-brand border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger" role="alert">
+      <span class="min-w-0">Could not scan installed tools — {loadError}</span>
+      <span class="text-text-muted">Use “Scan Installed Tools” to retry.</span>
+    </div>
+  {/if}
+
   <!-- SEARCH & CATEGORY FILTER TABS -->
   <div class="flex flex-col sm:flex-row items-center justify-between gap-3">
     <!-- Category Tabs -->
@@ -467,6 +615,15 @@
           : 'text-text-muted hover:text-text-main'}"
       >
         All Tools ({toolsCatalog.length})
+      </button>
+      <button
+        type="button"
+        onclick={() => (activeCategory = 'installed')}
+        class="flex-1 sm:flex-initial px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer {activeCategory === 'installed'
+          ? 'bg-surface text-brand-500 shadow-sm'
+          : 'text-text-muted hover:text-text-main'}"
+      >
+        Installed ({isLoading ? '…' : installedCount})
       </button>
       <button
         type="button"
@@ -589,6 +746,14 @@
           </span>
         </div>
       </div>
+    {:else}
+      <p class="col-span-full rounded-xl border border-border bg-surface px-4 py-8 text-center text-xs text-text-muted">
+        {#if activeCategory === 'installed'}
+          {isLoading ? 'Scanning installed tools…' : 'No installed tools detected. Use “Scan Installed Tools” to rescan.'}
+        {:else}
+          No tools match this filter.
+        {/if}
+      </p>
     {/each}
   </div>
 </div>
@@ -597,7 +762,7 @@
 {#if selectedTool}
   {@const status = getToolStatus(selectedTool.id)}
   <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4">
-    <div class="w-full max-w-xl p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-5">
+    <div class="w-full max-w-xl max-h-[90vh] overflow-y-auto custom-scrollbar p-6 rounded-2xl bg-surface border border-border shadow-2xl space-y-5">
       <!-- Modal Header -->
       <div class="flex items-start justify-between pb-3 border-b border-border">
         <div class="flex items-center gap-3">
@@ -654,6 +819,73 @@
           <X class="w-4 h-4" />
         </button>
       </div>
+
+      <!-- One-click installer -->
+      {#if statuses[selectedTool.id]?.installer}
+        {@const st = statuses[selectedTool.id]}
+        <div class="space-y-2.5 rounded-lg border border-success/25 bg-success/5 p-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div class="flex items-center gap-1.5 text-xs font-bold text-text-main">
+              <Zap class="w-3.5 h-3.5 text-success" />
+              <span>One-click setup</span>
+            </div>
+            <span class="text-[10px] font-semibold px-2 py-0.5 rounded border {st?.has9Router
+              ? 'bg-success/10 text-success border-success/20'
+              : 'bg-surface-2 text-text-subtle border-border'}">
+              {st?.has9Router ? 'Using 9router' : 'Not configured'}
+            </span>
+          </div>
+          {#if !st?.installed}
+            <p class="text-xs text-text-muted">Install {selectedTool.name} first, then scan again.</p>
+          {:else}
+            <p class="text-xs text-text-muted">
+              Writes the gateway URL, an API key and the model into {selectedTool.name}'s config
+              {#if st?.configPath}(<code class="font-mono text-[11px] break-all">{st.configPath}</code>){/if}.
+              Other settings are kept and the original file is backed up once.
+            </p>
+            <div class="flex flex-col gap-2 sm:flex-row">
+              <input
+                list="cli-assist-models"
+                bind:value={aiModel}
+                aria-label="Model for {selectedTool.name}"
+                placeholder={MODEL_OPTIONAL_TOOLS.has(selectedTool.id) ? 'Model (optional)' : hasActiveProvider ? 'Model' : 'Connect a provider to list models'}
+                class="min-w-0 flex-1 rounded-lg bg-surface border border-border px-2.5 py-1.5 font-mono text-xs text-text-main focus:outline-none focus:border-brand-500"
+              />
+              <button
+                type="button"
+                onclick={() => selectedTool && applyInstaller(selectedTool)}
+                disabled={installBusy !== null}
+                class="flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-success px-3 py-1.5 text-xs font-semibold text-bg transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+              >
+                {#if installBusy === 'apply'}
+                  <Loader2 class="w-3.5 h-3.5 animate-spin" />
+                  <span>Applying…</span>
+                {:else}
+                  <Check class="w-3.5 h-3.5" />
+                  <span>{st?.has9Router ? 'Re-apply' : `Configure ${selectedTool.name}`}</span>
+                {/if}
+              </button>
+              {#if st?.has9Router}
+                <button
+                  type="button"
+                  onclick={() => selectedTool && resetInstaller(selectedTool)}
+                  disabled={installBusy !== null}
+                  class="flex shrink-0 items-center justify-center gap-1.5 rounded-lg border border-danger/40 px-3 py-1.5 text-xs font-semibold text-danger transition hover:bg-danger/10 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+                >
+                  {#if installBusy === 'reset'}<Loader2 class="w-3.5 h-3.5 animate-spin" />{/if}
+                  <span>Remove</span>
+                </button>
+              {/if}
+            </div>
+          {/if}
+          {#if installError}
+            <p class="text-xs text-danger" role="alert">{installError}</p>
+          {/if}
+          {#if installMessage}
+            <p class="whitespace-pre-line text-xs text-success" role="status">{installMessage}</p>
+          {/if}
+        </div>
+      {/if}
 
       <!-- Quick Copy Snippet (if env variables available) -->
       {#if selectedTool.envVars}
@@ -720,6 +952,78 @@
           </div>
         </div>
       {/if}
+
+      <!-- Ask AI -->
+      <div class="space-y-2 rounded-lg border border-brand-500/25 bg-brand-500/5 p-3">
+        <div class="flex items-center gap-1.5 text-xs font-bold text-text-main">
+          <Sparkles class="w-3.5 h-3.5 text-brand-500" />
+          <span>Ask AI to set it up</span>
+        </div>
+        {#if !hasActiveProvider}
+          <p class="text-xs text-text-muted">
+            Connect a provider first — the answer is generated by your own models through this gateway.
+          </p>
+        {:else}
+          <div class="flex flex-col gap-2 sm:flex-row">
+            <input
+              list="cli-assist-models"
+              bind:value={aiModel}
+              aria-label="Model"
+              placeholder={aiModelsState === 'loading' ? 'Loading models…' : 'Model'}
+              class="min-w-0 flex-1 rounded-lg bg-surface border border-border px-2.5 py-1.5 font-mono text-xs text-text-main focus:outline-none focus:border-brand-500"
+            />
+            <datalist id="cli-assist-models">
+              {#each aiModels as m (m)}
+                <option value={m}></option>
+              {/each}
+            </datalist>
+            <button
+              type="button"
+              onclick={askAi}
+              disabled={aiLoading || !aiModel.trim()}
+              class="flex shrink-0 items-center justify-center gap-1.5 rounded-lg bg-brand-500 px-3 py-1.5 text-xs font-semibold text-white transition hover:bg-brand-600 disabled:cursor-not-allowed disabled:opacity-50 cursor-pointer"
+            >
+              {#if aiLoading}
+                <Loader2 class="w-3.5 h-3.5 animate-spin" />
+                <span>Asking…</span>
+              {:else}
+                <Sparkles class="w-3.5 h-3.5" />
+                <span>{aiAnswer ? 'Ask again' : 'Ask AI'}</span>
+              {/if}
+            </button>
+          </div>
+          <textarea
+            bind:value={aiQuestion}
+            rows="2"
+            maxlength="2000"
+            aria-label="Question for the AI (optional)"
+            placeholder="Optional — e.g. set it up globally, use a combo, or paste an error you got"
+            class="w-full resize-y rounded-lg bg-surface border border-border px-2.5 py-1.5 text-xs text-text-main focus:outline-none focus:border-brand-500"
+          ></textarea>
+          {#if aiError}
+            <p class="text-xs text-danger" role="alert">{aiError}</p>
+          {/if}
+          {#if aiAnswer}
+            <div class="relative rounded-lg border border-border bg-bg">
+              <button
+                type="button"
+                onclick={() => copyText(aiAnswer, 'ai-answer')}
+                class="absolute right-2 top-2 flex items-center gap-1 rounded border border-border bg-surface px-1.5 py-0.5 text-[10px] text-text-muted hover:text-text-main cursor-pointer"
+              >
+                {#if copiedSnippetId === 'ai-answer'}
+                  <Check class="w-3 h-3 text-success" /> Copied
+                {:else}
+                  <Copy class="w-3 h-3" /> Copy
+                {/if}
+              </button>
+              <pre class="max-h-80 overflow-y-auto custom-scrollbar whitespace-pre-wrap break-words p-3 pr-16 font-mono text-[11px] leading-relaxed text-text-main select-text">{aiAnswer}</pre>
+            </div>
+            <p class="text-[10px] text-text-subtle">
+              Answered by {aiAnswerModel}. Review before running — nothing is executed automatically.
+            </p>
+          {/if}
+        {/if}
+      </div>
 
       <!-- Footer -->
       <div class="flex items-center justify-between pt-3 border-t border-border">

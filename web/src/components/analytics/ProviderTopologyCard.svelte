@@ -216,7 +216,7 @@
   bind:this={containerEl}
   role="region"
   aria-label="Provider topology map"
-  class="h-[320px] w-full min-w-0 rounded-lg border border-border bg-bg-subtle/30 sm:h-[480px] relative overflow-hidden select-none cursor-grab active:cursor-grabbing"
+  class="relative h-[320px] w-full min-w-0 select-none overflow-hidden rounded-brand border border-border-subtle bg-bg-alt/40 sm:h-[480px] cursor-grab active:cursor-grabbing"
   onpointerdown={handlePointerDown}
   onpointermove={handlePointerMove}
   onpointerup={handlePointerUp}
@@ -249,38 +249,38 @@
               cy={node.y}
               r="35"
               fill="none"
-              stroke={node.color || '#22d3ee'}
+              stroke={node.color || 'var(--app-focus)'}
               opacity="0"
-              style="filter: drop-shadow(0 0 10px {node.color || '#22d3ee'});"
+              style="filter: drop-shadow(0 0 4px {node.color || 'var(--app-focus)'});"
             >
               <animate attributeName="r" values="32;105" dur="1.1s" repeatCount="indefinite" />
-              <animate attributeName="opacity" values="0.85;0" dur="1.1s" repeatCount="indefinite" />
-              <animate attributeName="stroke-width" values="3.5;0.5" dur="1.1s" repeatCount="indefinite" />
+              <animate attributeName="opacity" values="0.55;0" dur="1.1s" repeatCount="indefinite" />
+              <animate attributeName="stroke-width" values="2.5;0.5" dur="1.1s" repeatCount="indefinite" />
             </circle>
             <circle
               cx={node.x}
               cy={node.y}
               r="35"
               fill="none"
-              stroke="#38bdf8"
+              stroke="var(--app-primary)"
               opacity="0"
-              style="filter: drop-shadow(0 0 8px #38bdf8);"
+              style="filter: drop-shadow(0 0 4px var(--app-primary));"
             >
               <animate attributeName="r" values="32;105" dur="1.1s" begin="0.55s" repeatCount="indefinite" />
-              <animate attributeName="opacity" values="0.85;0" dur="1.1s" begin="0.55s" repeatCount="indefinite" />
-              <animate attributeName="stroke-width" values="3;0.5" dur="1.1s" begin="0.55s" repeatCount="indefinite" />
+              <animate attributeName="opacity" values="0.45;0" dur="1.1s" begin="0.55s" repeatCount="indefinite" />
+              <animate attributeName="stroke-width" values="2;0.5" dur="1.1s" begin="0.55s" repeatCount="indefinite" />
             </circle>
           </g>
 
-          <!-- Bidirectional Neural Stream (Router <-> Provider) -->
+          <!-- Bidirectional stream (Router <-> Provider): hairline traces, no laser core -->
           <g class="topology-edge-electric">
-            <!-- 1. Outgoing Prompt Stream: Outer electric halo (Router -> Provider) -->
+            <!-- 1. Outgoing prompt trace: soft brass halo -->
             <path
               d={node.path}
               fill="none"
-              stroke="#22d3ee"
-              stroke-width="10"
-              stroke-opacity="0.32"
+              stroke="var(--app-primary)"
+              stroke-width="6"
+              stroke-opacity="0.22"
               stroke-linecap="round"
               filter="url(#topo-electric)"
               class="topology-edge-halo"
@@ -289,47 +289,47 @@
             <path
               d={node.path}
               fill="none"
-              stroke="#06b6d4"
-              stroke-width="4.5"
-              stroke-opacity="0.8"
+              stroke="var(--app-focus)"
+              stroke-width="2.5"
+              stroke-opacity="0.65"
               stroke-linecap="round"
               filter="url(#topo-electric)"
               class="topology-edge-plasma"
             />
-            <!-- 3. Hot core laser forward beam -->
+            <!-- 3. Forward core trace -->
             <path
               d={node.path}
               fill="none"
-              stroke="#f8fafc"
-              stroke-width="2"
+              stroke="var(--app-text-main)"
+              stroke-width="1"
+              stroke-opacity="0.75"
               class="topology-edge-kame"
             />
 
-            <!-- 4. Incoming Token Stream: Reverse emerald/gold plasma (Provider -> Router) -->
+            <!-- 4. Incoming token stream (Provider -> Router) -->
             <path
               d={node.returnPath}
               fill="none"
-              stroke="#10b981"
-              stroke-width="3"
-              stroke-opacity="0.9"
+              stroke="var(--color-success)"
+              stroke-width="2"
+              stroke-opacity="0.7"
               class="topology-edge-return"
-              style="filter: drop-shadow(0 0 6px #34d399);"
             />
             <path
               d={node.returnPath}
               fill="none"
-              stroke="#fef08a"
-              stroke-width="1.4"
+              stroke="var(--app-primary)"
+              stroke-width="1"
+              stroke-opacity="0.6"
               class="topology-edge-return"
             />
 
-            <!-- Forward Prompt Tokens: Router -> Provider -->
+            <!-- Forward prompt tokens: Router -> Provider -->
             {#each [0, 1, 2] as i}
               <circle
-                r={i === 0 ? 4.5 : 3.2}
-                fill={i === 0 ? '#38bdf8' : i === 1 ? '#e0f2fe' : '#67e8f9'}
-                opacity="0.95"
-                style="filter: drop-shadow(0 0 6px #0ea5e9);"
+                r={i === 0 ? 3 : 2.2}
+                fill={i === 0 ? 'var(--app-focus)' : 'var(--app-text-muted)'}
+                opacity="0.8"
               >
                 <animateMotion
                   dur="{0.42 + i * 0.09}s"
@@ -340,13 +340,12 @@
               </circle>
             {/each}
 
-            <!-- Reverse Output Tokens: Provider -> Router (Streamed Responses) -->
+            <!-- Reverse output tokens: Provider -> Router -->
             {#each [0, 1, 2, 3] as i}
               <circle
-                r={i % 2 === 0 ? 4.2 : 2.8}
-                fill={i === 0 ? '#34d399' : i === 1 ? '#facc15' : i === 2 ? '#6ee7b7' : '#fde047'}
-                opacity="0.95"
-                style="filter: drop-shadow(0 0 6px #10b981);"
+                r={i % 2 === 0 ? 2.8 : 1.9}
+                fill={i % 2 === 0 ? 'var(--color-success)' : 'var(--app-primary)'}
+                opacity="0.8"
               >
                 <animateMotion
                   dur="{0.48 + i * 0.1}s"
@@ -357,16 +356,16 @@
               </circle>
             {/each}
 
-            <!-- Electric Sparks -->
+            <!-- Sparse trace sparks -->
             {#each [0, 1, 2, 3] as i}
               <circle
-                r="1.8"
-                fill="#e0f2fe"
+                r="1.2"
+                fill="var(--app-text-main)"
                 opacity="0"
               >
                 <animate
                   attributeName="opacity"
-                  values="0;1;0;0;1;0"
+                  values="0;0.6;0;0;0.6;0"
                   dur="{0.35 + (i % 3) * 0.1}s"
                   begin="{i * 0.07}s"
                   repeatCount="indefinite"
@@ -381,22 +380,22 @@
             {/each}
           </g>
         {:else if node.isLast}
-          <!-- Last Provider Active Edge (Amber) -->
+          <!-- Last provider used (ochre) -->
           <path
             d={node.path}
             fill="none"
-            stroke="#f59e0b"
-            stroke-width="2"
-            opacity="0.7"
+            stroke="var(--color-warning)"
+            stroke-width="1.5"
+            opacity="0.6"
           />
         {:else if node.isError}
-          <!-- Error Edge (Red) -->
+          <!-- Error edge (crimson) -->
           <path
             d={node.path}
             fill="none"
-            stroke="#ef4444"
-            stroke-width="2.5"
-            opacity="0.9"
+            stroke="var(--color-danger)"
+            stroke-width="2"
+            opacity="0.8"
           />
         {:else}
           <!-- Inactive Subtle Edge -->
@@ -409,7 +408,7 @@
           />
         {/if}
       {/each}
-      <!-- Center Router Absorption Rings when activeCount > 0 -->
+      <!-- Center router absorption rings when traffic is in flight -->
       {#if activeCount > 0}
         <g class="topology-router-absorption">
           <circle
@@ -417,28 +416,28 @@
             cy="0"
             r="30"
             fill="none"
-            stroke="#22d3ee"
+            stroke="var(--app-focus)"
             stroke-dasharray="5 5"
             opacity="0"
-            style="filter: drop-shadow(0 0 6px #22d3ee);"
+            style="filter: drop-shadow(0 0 3px var(--app-focus));"
           >
             <animate attributeName="r" values="55;20" dur="0.9s" repeatCount="indefinite" />
-            <animate attributeName="opacity" values="0;0.8;0" dur="0.9s" repeatCount="indefinite" />
-            <animate attributeName="stroke-width" values="1;2.5;0.5" dur="0.9s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0;0.5;0" dur="0.9s" repeatCount="indefinite" />
+            <animate attributeName="stroke-width" values="1;1.8;0.5" dur="0.9s" repeatCount="indefinite" />
           </circle>
           <circle
             cx="0"
             cy="0"
             r="30"
             fill="none"
-            stroke="#facc15"
+            stroke="var(--app-primary)"
             stroke-dasharray="4 6"
             opacity="0"
-            style="filter: drop-shadow(0 0 6px #facc15);"
+            style="filter: drop-shadow(0 0 3px var(--app-primary));"
           >
             <animate attributeName="r" values="65;24" dur="1.1s" begin="0.45s" repeatCount="indefinite" />
-            <animate attributeName="opacity" values="0;0.7;0" dur="1.1s" begin="0.45s" repeatCount="indefinite" />
-            <animate attributeName="stroke-width" values="0.8;2;0.5" dur="1.1s" begin="0.45s" repeatCount="indefinite" />
+            <animate attributeName="opacity" values="0;0.4;0" dur="1.1s" begin="0.45s" repeatCount="indefinite" />
+            <animate attributeName="stroke-width" values="0.8;1.4;0.5" dur="1.1s" begin="0.45s" repeatCount="indefinite" />
           </circle>
         </g>
       {/if}
@@ -446,21 +445,21 @@
 
     <!-- HTML Router Node (Center 0, 0) -->
     <div
-      class="absolute z-10 flex items-center justify-center px-5 py-3 rounded-xl border-2 min-w-[130px] {activeCount > 0 ? 'topology-router-core border-yellow-300 bg-gradient-to-br from-primary/30 via-yellow-400/20 to-cyan-400/25' : 'border-primary bg-primary/5 shadow-md'} pointer-events-auto"
+      class="absolute z-10 flex min-w-[130px] items-center justify-center rounded-brand border-2 px-5 py-3 {activeCount > 0 ? 'topology-router-core' : 'border-primary bg-primary/5'} pointer-events-auto"
       style="left: 0px; top: 0px; transform: translate(-50%, -50%);"
     >
       <img
         src="/favicon.svg"
         alt="9router-go"
-        class="w-6 h-6 mr-2 object-contain {activeCount > 0 ? 'topology-router-icon' : ''}"
+        class="mr-2 h-6 w-6 object-contain {activeCount > 0 ? 'topology-router-icon' : ''}"
         loading="lazy"
         decoding="async"
       />
-      <span class="text-sm font-bold {activeCount > 0 ? 'topology-router-label text-yellow-300' : 'text-primary'}">
+      <span class="text-sm font-bold text-primary {activeCount > 0 ? 'topology-router-label' : ''}">
         9router-go
       </span>
       {#if activeCount > 0}
-        <span class="ml-2 px-1.5 py-0.5 rounded-full bg-yellow-400 text-black text-xs font-bold topology-router-badge">
+        <span class="topology-router-badge ml-2 rounded-full border border-primary/40 bg-primary/15 px-1.5 py-0.5 font-code text-xs font-bold tabular-nums text-primary">
           {activeCount}
         </span>
       {/if}
@@ -468,18 +467,17 @@
     <!-- HTML Provider Nodes -->
     {#each geometry.nodes as node (node.id)}
       <div
-        class="absolute flex items-center gap-2.5 px-4 py-2.5 rounded-lg border-2 transition-all duration-300 bg-bg shadow-sm pointer-events-auto {node.isActive ? 'topology-node-active-bounce' : ''}"
-        style="left: {node.x}px; top: {node.y}px; transform: translate(-50%, -50%); border-color: {node.isActive ? node.color : node.isLast ? '#f59e0b' : 'var(--color-border)'}; box-shadow: {node.isActive ? `0 0 22px ${node.color}60, 0 0 10px rgba(34, 211, 238, 0.4)` : node.isLast ? '0 0 8px rgba(245, 158, 11, 0.25)' : 'none'}; min-width: 150px;"
+        class="absolute flex items-center gap-2.5 rounded-brand border-2 bg-bg px-4 py-2.5 shadow-soft transition-all duration-300 pointer-events-auto {node.isActive ? 'topology-node-active-bounce' : ''}"
+        style="left: {node.x}px; top: {node.y}px; transform: translate(-50%, -50%); border-color: {node.isActive ? node.color : node.isLast ? 'var(--color-warning)' : 'var(--color-border)'}; box-shadow: {node.isActive ? `0 0 12px ${node.color}40` : node.isLast ? '0 0 6px rgba(211, 173, 115, 0.2)' : 'none'}; min-width: 150px;"
       >
         <div
-          class="w-8 h-8 rounded-md flex items-center justify-center shrink-0"
-          style="background-color: {node.color}15;"
+          class="flex size-8 shrink-0 items-center justify-center rounded-brand border border-border-subtle bg-surface-2"
         >
           {#if !imageErrors[node.id]}
             <img
               src={getIconPath(node.id)}
               alt={node.name}
-              class="w-6 h-6 rounded-sm object-contain"
+              class="h-6 w-6 rounded-sm object-contain"
               onerror={() => {
                 imageErrors = { ...imageErrors, [node.id]: true }
               }}
@@ -493,8 +491,8 @@
           {/if}
         </div>
         <span
-          class="text-base font-medium truncate max-w-[200px]"
-          style="color: {node.isActive ? node.color : 'var(--color-text)'}"
+          class="max-w-[200px] truncate text-base font-medium"
+          style="color: {node.isActive ? node.color : 'var(--app-text-main)'}"
           title={node.name}
         >
           {node.name}
@@ -502,17 +500,17 @@
 
         <!-- Active indicator -->
         {#if node.isActive}
-          <div class="flex items-center gap-1.5 ml-auto shrink-0">
-            <span class="text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
+          <div class="ml-auto flex shrink-0 items-center gap-1.5">
+            <span class="rounded-brand border border-success/30 bg-success/15 px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wider text-success">
               Live
             </span>
-            <span class="relative flex h-2 w-2">
+            <span class="relative flex size-2">
               <span
-                class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75"
+                class="absolute inline-flex h-full w-full rounded-full opacity-60"
                 style="background-color: {node.color};"
               ></span>
               <span
-                class="relative inline-flex rounded-full h-2 w-2"
+                class="relative inline-flex size-2 rounded-full"
                 style="background-color: {node.color};"
               ></span>
             </span>
@@ -523,7 +521,7 @@
   </div>
 
   <!-- Bottom-left React Flow style controls -->
-  <div class="absolute bottom-4 left-4 z-20 flex flex-col rounded-md border border-border bg-surface/90 shadow-md overflow-hidden backdrop-blur">
+  <div class="absolute bottom-4 left-4 z-20 flex flex-col overflow-hidden rounded-brand border border-border bg-surface/95 shadow-soft">
     <button
       type="button"
       onclick={() => (zoom = Math.min(2.5, zoom * 1.2))}

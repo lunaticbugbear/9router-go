@@ -1,112 +1,154 @@
+<script module lang="ts">
+  import type { ActiveTab } from '../lib/router'
+
+  export type NavLink = {
+    tab: ActiveTab
+    label: string
+    icon: string
+    /** Tabs that should also light this entry up (one route, several names). */
+    match?: ActiveTab[]
+    /** Short qualifier shown in command palette results. */
+    hint?: string
+  }
+  export type NavGroup = {
+    id: string
+    label: string
+    /** Roman numeral prefix; omitted for the footer group. */
+    numeral?: string
+    collapsible?: boolean
+    links: NavLink[]
+  }
+
+  /**
+   * Single source of truth for navigation. The TopBar breadcrumb and the command
+   * palette read the same model, so no destination can drift out of sync.
+   */
+  export const NAV_GROUPS: NavGroup[] = [
+    {
+      id: 'gateway',
+      numeral: 'I',
+      label: 'Gateway',
+      links: [
+        { tab: 'overview', label: 'Overview', icon: 'space_dashboard', hint: 'Status and traffic' },
+        { tab: 'endpoint', label: 'Endpoint', icon: 'api', match: ['endpoint', 'keys'], hint: 'Base URL and keys' },
+        { tab: 'connections', label: 'Providers', icon: 'dns', hint: 'Upstream connections' },
+        { tab: 'combos', label: 'Combos', icon: 'layers', hint: 'Model fallback chains' },
+        { tab: 'proxy-pools', label: 'Proxy Pools', icon: 'lan', hint: 'Egress routing' },
+      ],
+    },
+    {
+      id: 'observe',
+      numeral: 'II',
+      label: 'Observe',
+      links: [
+        { tab: 'analytics', label: 'Usage', icon: 'bar_chart', hint: 'Traffic and tokens' },
+        { tab: 'quota', label: 'Quota', icon: 'data_usage', hint: 'Limit headroom' },
+        { tab: 'console-log', label: 'Console Log', icon: 'terminal', match: ['console-log', 'terminal'], hint: 'Live server output' },
+      ],
+    },
+    {
+      id: 'optimize',
+      numeral: 'III',
+      label: 'Optimize',
+      links: [
+        { tab: 'token-saver', label: 'Token Saver', icon: 'savings', hint: 'Prompt compression' },
+        { tab: 'feature-flags', label: 'Feature Flags', icon: 'toggle_on', hint: 'Optional capabilities' },
+      ],
+    },
+    {
+      id: 'media',
+      numeral: 'IV',
+      label: 'Media',
+      collapsible: true,
+      links: [
+        { tab: 'media-embedding', label: 'Embeddings', icon: 'data_array', hint: 'Vector models' },
+        { tab: 'media-image', label: 'Image', icon: 'brush', hint: 'Image generation' },
+        { tab: 'media-tts', label: 'Text to Speech', icon: 'record_voice_over', hint: 'Voice synthesis' },
+        { tab: 'media-stt', label: 'Speech to Text', icon: 'mic', hint: 'Transcription' },
+        { tab: 'media-video', label: 'Video', icon: 'movie', hint: 'Video generation' },
+        { tab: 'media-systemone', label: 'System One', icon: 'psychology', hint: 'State evaluation' },
+        { tab: 'media-web', label: 'Web Fetch & Search', icon: 'travel_explore', hint: 'Search and scrape' },
+      ],
+    },
+    {
+      id: 'tools',
+      numeral: 'V',
+      label: 'Tools',
+      links: [
+        { tab: 'cli-tools', label: 'CLI Tools', icon: 'terminal', hint: 'Client setup' },
+        { tab: 'skills', label: 'Skills', icon: 'extension', hint: 'Copy-and-paste links' },
+        { tab: 'personas', label: 'Personas', icon: 'psychology', hint: 'System prompts' },
+        { tab: 'bounty', label: 'Bug Bounty Assist', icon: 'bug_report', hint: 'Scope context' },
+      ],
+    },
+  ]
+
+  /** Rendered in the rail footer rather than as a numbered section. */
+  export const SYSTEM_NAV_GROUP: NavGroup = {
+    id: 'system',
+    label: 'System',
+    links: [{ tab: 'settings', label: 'Settings', icon: 'settings', hint: 'Preferences and profile' }],
+  }
+
+  export const ALL_NAV_GROUPS: NavGroup[] = [...NAV_GROUPS, SYSTEM_NAV_GROUP]
+
+  export function linkMatches(link: NavLink, tab: ActiveTab): boolean {
+    return link.match ? link.match.includes(tab) : link.tab === tab
+  }
+
+  export function groupTitle(group: NavGroup): string {
+    return group.numeral ? `${group.numeral} · ${group.label}` : group.label
+  }
+
+  /** Section label for a destination, used by the TopBar breadcrumb. */
+  export function sectionLabelFor(tab: ActiveTab): string {
+    const group = ALL_NAV_GROUPS.find((g) => g.links.some((link) => linkMatches(link, tab)))
+    return group ? groupTitle(group) : 'Dashboard'
+  }
+</script>
+
 <script lang="ts">
-  import { api, type SystemVersionInfo } from '../api/client'
+  import { api } from '../api/client'
   import { TAB_ROUTES, type ActiveTab } from '../lib/router'
+  import Icon from '../lib/ui/Icon.svelte'
 
   export type { ActiveTab }
 
   let {
-    activeTab = $bindable('endpoint'),
+    activeTab = $bindable('overview'),
     navigate = (tab: ActiveTab) => {
       activeTab = tab
     },
     activeConnections = 0,
     totalConnections = 0,
+    collapsed = false,
+    onToggleCollapse,
     onClose,
   }: {
     activeTab: ActiveTab
     navigate?: (tab: ActiveTab, replace?: boolean) => void
     activeConnections?: number
     totalConnections?: number
+    collapsed?: boolean
+    onToggleCollapse?: () => void
     onClose?: () => void
   } = $props()
 
   let version = $state('')
-  let updateInfo = $state<SystemVersionInfo | null>(null)
-  let showUpdateModal = $state(false)
-  let isUpdating = $state(false)
-  let updateStatus = $state<'idle' | 'updating' | 'success' | 'error'>('idle')
-  let updateMsg = $state('')
-  let copied = $state(false)
-  let shutdownCountdown = $state(0)
-  let isDisconnected = $state(false)
+  const MEDIA_OPEN_KEY = '9router-nav-media-open'
 
-  const INSTALL_CMD = '9router-go update'
-
-  // Media providers accordion (collapsed by default)
-  let isMediaOpen = $state(false)
+  let isMediaOpen = $state(
+    typeof localStorage !== 'undefined' && localStorage.getItem(MEDIA_OPEN_KEY) === '1'
+  )
 
   $effect(() => {
     api
       .getSystemVersion()
       .then((v) => {
-        if (v) {
-          version = v.currentVersion || ''
-          if (v.hasUpdate) {
-            updateInfo = v
-          }
-        }
+        if (v) version = v.currentVersion || ''
       })
       .catch(() => {})
-
-    const timer = setTimeout(() => {
-      api
-        .checkUpdate()
-        .then((v) => {
-          if (v) {
-            version = v.currentVersion || version
-            if (v.hasUpdate) {
-              updateInfo = v
-            }
-          }
-        })
-        .catch(() => {})
-    }, 2500)
-
-    return () => clearTimeout(timer)
   })
-
-  async function copyInstallCmd() {
-    try {
-      await navigator.clipboard.writeText(INSTALL_CMD)
-    } catch {}
-    copied = true
-    setTimeout(() => {
-      copied = false
-    }, 2000)
-  }
-
-  async function handleAutoUpdate() {
-    isUpdating = true
-    updateStatus = 'updating'
-    updateMsg = 'Downloading and applying binary update...'
-    try {
-      const res = await api.triggerUpdate()
-      updateStatus = 'success'
-      updateMsg = res?.message || 'Update installed successfully. Process is restarting...'
-      setTimeout(() => {
-        globalThis.location.reload()
-      }, 3500)
-    } catch (err: any) {
-      updateStatus = 'error'
-      updateMsg = err?.message || 'Auto update failed. Please run update command manually.'
-      isUpdating = false
-    }
-  }
-
-  async function handleCopyAndShutdown() {
-    await copyInstallCmd()
-    let remaining = 5
-    shutdownCountdown = remaining
-    const timer = setInterval(() => {
-      remaining -= 1
-      shutdownCountdown = remaining
-      if (remaining <= 0) {
-        clearInterval(timer)
-        api.shutdownServer().catch(() => {})
-        isDisconnected = true
-      }
-    }, 1000)
-  }
 
   function handleNav(tab: ActiveTab, e?: MouseEvent) {
     if (e) {
@@ -117,376 +159,192 @@
     onClose?.()
   }
 
-  const mainNavLinks = [
-    { tab: 'endpoint' as ActiveTab, label: 'Endpoint & Key', icon: 'api' },
-    { tab: 'connections' as ActiveTab, label: 'Providers', icon: 'dns' },
-    { tab: 'combos' as ActiveTab, label: 'Combo & Vision Adapter', icon: 'layers' },
-    { tab: 'analytics' as ActiveTab, label: 'Usage', icon: 'bar_chart' },
-    { tab: 'quota' as ActiveTab, label: 'Quota Tracker', icon: 'data_usage' },
-    { tab: 'token-saver' as ActiveTab, label: 'Token Saver', icon: 'savings' },
-    { tab: 'cli-tools' as ActiveTab, label: 'CLI Tools', icon: 'terminal' },
-    { tab: 'bounty' as ActiveTab, label: 'Bug Bounty Assist', icon: 'bug_report' },
-    { tab: 'personas' as ActiveTab, label: 'Persona Loader', icon: 'psychology' },
-    { tab: 'feature-flags' as ActiveTab, label: 'Feature Flags', icon: 'toggle_on' },
-  ] as const
-
-  const mediaNavLinks = [
-    { tab: 'media-embedding' as ActiveTab, label: 'Embedding', icon: 'data_array' },
-    { tab: 'media-image' as ActiveTab, label: 'Text to Image', icon: 'brush' },
-    { tab: 'media-tts' as ActiveTab, label: 'Text To Speech', icon: 'record_voice_over' },
-    { tab: 'media-stt' as ActiveTab, label: 'Speech To Text', icon: 'mic' },
-    { tab: 'media-video' as ActiveTab, label: 'Video', icon: 'movie' },
-    { tab: 'media-systemone' as ActiveTab, label: 'System One', icon: 'psychology' },
-    { tab: 'media-web' as ActiveTab, label: 'Web Fetch & Search', icon: 'travel_explore' },
-  ] as const
-
-  const systemNavLinks = [
-    { tab: 'proxy-pools' as ActiveTab, label: 'Proxy Pools', icon: 'lan' },
-    { tab: 'skills' as ActiveTab, label: 'Skills', icon: 'extension' },
-    { tab: 'console-log' as ActiveTab, label: 'Console Log', icon: 'terminal' },
-  ] as const
-
-  function isLinkActive(tab: ActiveTab): boolean {
-    if (tab === 'endpoint') {
-      return activeTab === 'endpoint' || activeTab === 'keys'
-    }
-    if (tab === 'console-log') {
-      return activeTab === 'console-log' || activeTab === 'terminal'
-    }
-    return activeTab === tab
+  function isLinkActive(link: NavLink): boolean {
+    return linkMatches(link, activeTab)
   }
+
+  function toggleMedia() {
+    isMediaOpen = !isMediaOpen
+    try {
+      localStorage.setItem(MEDIA_OPEN_KEY, isMediaOpen ? '1' : '0')
+    } catch {}
+  }
+
+  let isMediaActive = $derived(activeTab.startsWith('media-'))
+
+  // Reveal the collapsed group when a deep link or the palette lands inside it.
+  $effect(() => {
+    if (isMediaActive) isMediaOpen = true
+  })
+
+  const gatewayLabel = $derived(
+    totalConnections === 0
+      ? 'No providers'
+      : activeConnections > 0
+        ? 'Gateway online'
+        : 'Gateway idle'
+  )
+  const gatewayTone = $derived(
+    totalConnections === 0 ? 'muted' : activeConnections > 0 ? 'ok' : 'idle'
+  )
 </script>
 
 <aside
-  class="flex w-72 flex-col border-r border-border-subtle bg-sidebar backdrop-blur-xl transition-colors duration-300 min-h-full flex-shrink-0 select-none z-30"
+  class="flex h-full w-full select-none flex-col overflow-hidden border-r border-border-subtle bg-sidebar"
 >
-  <!-- Window control / traffic lights -->
-  <div class="flex items-center gap-2 px-6 pt-5 pb-2">
-    <div class="w-3 h-3 rounded-full bg-[#FF5F56]"></div>
-    <div class="w-3 h-3 rounded-full bg-[#FFBD2E]"></div>
-    <div class="w-3 h-3 rounded-full bg-[#27C93F]"></div>
-  </div>
-
-  <!-- Brand header: 9router-go with official favicon.svg logo -->
-  <div class="px-6 py-4 flex flex-col gap-2">
+  <!-- Wordmark, version, collapse toggle -->
+  <div
+    class="flex border-b border-border-subtle {collapsed
+      ? 'flex-col items-center gap-2 px-2 py-4'
+      : 'items-center justify-between gap-2 px-5 py-5'}"
+  >
     <a
-      href={TAB_ROUTES.endpoint}
-      onclick={(e) => handleNav('endpoint', e)}
-      class="flex items-center gap-3 cursor-pointer group"
+      href={TAB_ROUTES.overview}
+      onclick={(e) => handleNav('overview', e)}
+      title={collapsed ? '9router-go' : undefined}
+      class="flex min-w-0 cursor-pointer items-center gap-3"
     >
-      <div
-        class="flex items-center justify-center size-9 rounded-[10px] bg-surface-2 border border-border-subtle shadow-[var(--shadow-warm)] flex-shrink-0 group-hover:scale-105 transition-transform overflow-hidden p-1.5"
+      <span
+        class="flex size-10 flex-shrink-0 items-center justify-center overflow-hidden rounded-brand border border-border-subtle bg-surface-2 p-2"
       >
-        <img
-          src="/favicon.svg"
-          alt="9router-go"
-          class="w-full h-full object-contain"
-        />
-      </div>
-      <div class="flex flex-col min-w-0">
-        <h1 class="text-lg font-semibold tracking-tight text-text-main truncate leading-snug">
-          9router-go
-        </h1>
-        <span class="text-xs text-text-muted leading-tight">
-          {version ? `v${version}` : 'v1.9.0'}
+        <img src="/favicon.svg" alt="" class="h-full w-full object-contain" />
+      </span>
+      {#if !collapsed}
+        <span class="flex min-w-0 flex-col gap-0.5">
+          <span
+            class="truncate font-headline text-[15px] font-semibold uppercase leading-tight tracking-[0.12em] text-text-main"
+          >
+            9router-go
+          </span>
+          <span class="ui-stat text-[11px] text-text-subtle">
+            {version ? `v${version}` : 'v1.9.0'}
+          </span>
         </span>
-      </div>
+      {/if}
     </a>
-
-    <!-- Update notification banner below version (matches upstream 9router) -->
-    {#if updateInfo && updateInfo.hasUpdate}
-      <div
-        class="flex flex-col gap-1.5 rounded-lg p-2 bg-green-500/10 dark:bg-amber-500/10 border border-green-500/30 dark:border-amber-500/30 text-green-700 dark:text-amber-400 mt-0.5 animate-in fade-in duration-200"
+    {#if onToggleCollapse}
+      <button
+        type="button"
+        onclick={onToggleCollapse}
+        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        title={collapsed ? 'Expand sidebar (Ctrl/⌘+B)' : 'Collapse sidebar (Ctrl/⌘+B)'}
+        class="hidden size-8 flex-shrink-0 cursor-pointer items-center justify-center rounded-brand text-text-subtle transition-colors hover:bg-surface-2 hover:text-text-main lg:flex"
       >
-        <span class="text-[11px] font-semibold text-green-700 dark:text-amber-400 flex items-center gap-1">
-          <span class="material-symbols-outlined text-[14px]">arrow_upward</span>
-          <span class="truncate">New version available: v{updateInfo.latestVersion}</span>
-        </span>
-        <div class="flex items-center gap-1.5">
-          <button
-            type="button"
-            onclick={() => (showUpdateModal = true)}
-            class="px-2 py-0.5 rounded bg-green-600 hover:bg-green-700 dark:bg-amber-500 dark:hover:bg-amber-600 text-white text-[11px] font-semibold transition-colors cursor-pointer shrink-0"
-          >
-            Update now
-          </button>
-          <button
-            type="button"
-            onclick={copyInstallCmd}
-            title="Copy install command"
-            class="flex-1 text-left hover:opacity-80 transition-opacity cursor-pointer min-w-0"
-          >
-            <code class="block text-[10px] text-green-700 dark:text-amber-300 font-mono truncate bg-surface/70 px-1 py-0.5 rounded">
-              {copied ? '✓ copied!' : INSTALL_CMD}
-            </code>
-          </button>
-        </div>
-      </div>
+        <Icon name={collapsed ? 'sidebar-open' : 'sidebar-close'} size={18} />
+      </button>
     {/if}
   </div>
 
-  <!-- Navigation -->
-  <nav class="flex-1 px-4 py-2 space-y-0.5 overflow-y-auto custom-scrollbar">
-    <!-- 1-7 Main navigation links -->
-    {#each mainNavLinks as item (item.tab)}
-      {@const active = isLinkActive(item.tab)}
-      <a
-        href={TAB_ROUTES[item.tab]}
-        onclick={(e) => handleNav(item.tab, e)}
-        class="flex items-center gap-3 px-3 py-1.5 rounded-lg transition-all group cursor-pointer {active
-          ? 'bg-primary/10 text-primary font-medium'
-          : 'text-text-muted hover:bg-surface-2 hover:text-text-main'}"
-      >
-        <span
-          class="material-symbols-outlined text-[18px] {active
-            ? 'fill-1'
-            : 'group-hover:text-primary transition-colors'}"
-        >
-          {item.icon}
-        </span>
-        <span class="text-[13px]">{item.label}</span>
-      </a>
-    {/each}
-
-    <!-- System section header -->
-    <div class="pt-3 mt-2 space-y-0.5">
-      <p class="px-3 text-xs font-semibold text-text-muted/60 uppercase tracking-wider mb-2">
-        System
-      </p>
-
-      <!-- 8. Media Providers accordion -->
-      <button
-        type="button"
-        onclick={() => (isMediaOpen = !isMediaOpen)}
-        class="w-full flex items-center gap-3 px-3 py-1.5 rounded-lg transition-all group cursor-pointer {activeTab.startsWith(
-          'media-'
-        )
-          ? 'bg-primary/10 text-primary font-medium'
-          : 'text-text-muted hover:bg-surface-2 hover:text-text-main'}"
-      >
-        <span class="material-symbols-outlined text-[18px]">perm_media</span>
-        <span class="text-[13px] flex-1 text-left">Media Providers</span>
-        <span
-          class="material-symbols-outlined text-[14px] transition-transform duration-200"
-          style:transform={isMediaOpen ? 'rotate(180deg)' : 'rotate(0deg)'}
-        >
-          expand_more
-        </span>
-      </button>
-
-      {#if isMediaOpen}
-        <div class="pl-4 space-y-0.5">
-          {#each mediaNavLinks as item (item.tab)}
-            {@const active = isLinkActive(item.tab)}
-            <a
-              href={TAB_ROUTES[item.tab]}
-              onclick={(e) => handleNav(item.tab, e)}
-              class="flex items-center gap-3 px-3 py-1.5 rounded-lg transition-all group cursor-pointer {active
-                ? 'bg-primary/10 text-primary font-medium'
-                : 'text-text-muted hover:bg-surface-2 hover:text-text-main'}"
+  <nav
+    class="custom-scrollbar min-h-0 flex-1 overflow-y-auto py-4 {collapsed ? 'px-2' : 'px-3'}"
+    aria-label="Dashboard navigation"
+  >
+    {#each NAV_GROUPS as group, gi (group.id)}
+      <section class="mb-4 last:mb-0" aria-labelledby="nav-heading-{group.id}">
+        {#if collapsed}
+          <h2 id="nav-heading-{group.id}" class="sr-only">{group.label}</h2>
+          {#if gi > 0}<div class="mx-2 mb-3 h-px bg-border-subtle" aria-hidden="true"></div>{/if}
+          {#if group.collapsible && !isMediaOpen}
+            <button
+              type="button"
+              onclick={toggleMedia}
+              aria-expanded={isMediaOpen}
+              aria-controls="nav-links-{group.id}"
+              aria-label="Show {group.label}"
+              title={group.label}
+              class="flex w-full cursor-pointer items-center justify-center rounded-brand py-1.5 transition-colors hover:bg-surface-2 {isMediaActive
+                ? 'text-primary'
+                : 'text-text-subtle hover:text-text-muted'}"
             >
-              <span
-                class="material-symbols-outlined text-[16px] {active
-                  ? 'fill-1'
-                  : 'group-hover:text-primary transition-colors'}"
-              >
-                {item.icon}
-              </span>
-              <span class="text-[13px]">{item.label}</span>
-            </a>
-          {/each}
-        </div>
-      {/if}
-
-      <!-- 9-11 System links: Proxy Pools, Skills, Console Log -->
-      {#each systemNavLinks as item (item.tab)}
-        {@const active = isLinkActive(item.tab)}
-        <a
-          href={TAB_ROUTES[item.tab]}
-          onclick={(e) => handleNav(item.tab, e)}
-          class="flex items-center gap-3 px-3 py-1.5 rounded-lg transition-all group cursor-pointer {active
-            ? 'bg-primary/10 text-primary font-medium'
-            : 'text-text-muted hover:bg-surface-2 hover:text-text-main'}"
-        >
-          <span
-            class="material-symbols-outlined text-[18px] {active
-              ? 'fill-1'
-              : 'group-hover:text-primary transition-colors'}"
+              <Icon name="media" />
+            </button>
+          {/if}
+        {:else if group.collapsible}
+          <h2 id="nav-heading-{group.id}">
+            <button
+              type="button"
+              onclick={toggleMedia}
+              aria-expanded={isMediaOpen}
+              aria-controls="nav-links-{group.id}"
+              class="flex w-full cursor-pointer items-center justify-between px-3 pb-1.5 font-code text-[10px] font-semibold uppercase tracking-[0.16em] text-text-subtle transition-colors hover:text-text-muted"
+            >
+              <span><span class="text-brass">{group.numeral}</span> · {group.label}</span>
+              <Icon name="chevron-down" size={14} class="transition-transform duration-150 ease-imperial {isMediaOpen ? 'rotate-180' : ''}" />
+            </button>
+          </h2>
+        {:else}
+          <h2
+            id="nav-heading-{group.id}"
+            class="px-3 pb-1.5 font-code text-[10px] font-semibold uppercase tracking-[0.16em] text-text-subtle"
           >
-            {item.icon}
-          </span>
-          <span class="text-[13px]">{item.label}</span>
-        </a>
-      {/each}
+            <span class="text-brass">{group.numeral}</span> · {group.label}
+          </h2>
+        {/if}
 
-      <!-- 12. Settings -->
-      <a
-        href={TAB_ROUTES.settings}
-        onclick={(e) => handleNav('settings', e)}
-        class="flex items-center gap-3 px-3 py-1.5 rounded-lg transition-all group cursor-pointer {isLinkActive('settings')
-          ? 'bg-primary/10 text-primary font-medium'
-          : 'text-text-muted hover:bg-surface-2 hover:text-text-main'}"
-      >
-        <span
-          class="material-symbols-outlined text-[18px] {isLinkActive('settings')
-            ? 'fill-1'
-            : 'group-hover:text-primary transition-colors'}"
-        >
-          settings
-        </span>
-        <span class="text-[13px]">Settings</span>
-      </a>
-    </div>
+        {#if !group.collapsible || isMediaOpen}
+          <ul id="nav-links-{group.id}" class="space-y-0.5">
+            {#each group.links as link (link.tab)}
+              {@render navItem(link)}
+            {/each}
+          </ul>
+        {/if}
+      </section>
+    {/each}
   </nav>
 
-  <!-- Bottom connection summary -->
-  <div class="p-4 border-t border-border-subtle">
-    <div
-      class="p-2.5 rounded-[10px] bg-surface border border-border-subtle flex items-center justify-between"
+  <!-- Footer: system destinations + gateway readout -->
+  <div class="flex flex-shrink-0 flex-col gap-2 border-t border-border-subtle py-3 {collapsed ? 'px-2' : 'px-3'}">
+    <ul class="space-y-0.5">
+      {#each SYSTEM_NAV_GROUP.links as link (link.tab)}
+        {@render navItem(link)}
+      {/each}
+    </ul>
+
+    <a
+      href={TAB_ROUTES.connections}
+      onclick={(e) => handleNav('connections', e)}
+      title={collapsed ? `${activeConnections}/${totalConnections} active · ${gatewayLabel}` : gatewayLabel}
+      class="flex items-center gap-2 rounded-brand border border-border-subtle bg-surface py-2 transition-colors duration-150 ease-imperial hover:border-brass/50 {collapsed
+        ? 'flex-col justify-center px-1'
+        : 'justify-between px-3'}"
     >
-      <div class="min-w-0">
-        <p class="text-[11px] text-text-muted uppercase tracking-wide">Providers</p>
-        <p class="text-xs font-semibold text-text-main mt-0.5 truncate">
-          {activeConnections} <span class="text-text-muted font-normal">/ {totalConnections} active</span>
-        </p>
-      </div>
-      <span class="material-symbols-outlined text-primary text-[18px]">radio_button_checked</span>
-    </div>
+      <span class="flex items-center gap-2 font-code text-[11px] uppercase tracking-[0.12em] text-text-muted {collapsed ? 'flex-col gap-1' : ''}">
+        <span
+          class="size-1.5 flex-shrink-0 rounded-full {gatewayTone === 'ok'
+            ? 'bg-success'
+            : gatewayTone === 'idle'
+              ? 'bg-warning'
+              : 'bg-text-subtle'}"
+          aria-hidden="true"
+        ></span>
+        <span class="ui-stat text-text-main {collapsed ? 'tracking-normal' : ''}">{activeConnections}/{totalConnections}</span>
+        {#if !collapsed}active{/if}
+      </span>
+      {#if !collapsed}
+        <span class="truncate text-[11px] text-text-subtle">{gatewayLabel}</span>
+      {/if}
+    </a>
   </div>
 </aside>
 
-<!-- Update Modal -->
-{#if showUpdateModal}
-  <div class="fixed inset-0 z-50 flex items-center justify-center p-4">
-    <div
-      class="absolute inset-0 bg-black/50 backdrop-blur-sm"
-      onclick={() => (showUpdateModal = false)}
-      onkeydown={(e) => e.key === 'Escape' && (showUpdateModal = false)}
-      role="button"
-      tabindex="-1"
-      aria-label="Close background"
-    ></div>
-
-    <div
-      class="relative w-full max-w-lg bg-surface border border-border-subtle rounded-2xl shadow-2xl p-6 flex flex-col gap-4 z-10 animate-in fade-in zoom-in-95"
+{#snippet navItem(link: NavLink)}
+  {@const active = isLinkActive(link)}
+  <li>
+    <a
+      href={TAB_ROUTES[link.tab]}
+      onclick={(e) => handleNav(link.tab, e)}
+      aria-current={active ? 'page' : undefined}
+      aria-label={collapsed ? link.label : undefined}
+      title={collapsed ? link.label : undefined}
+      class="group flex cursor-pointer items-center border-l-2 py-1.5 text-[13px] transition-colors duration-150 ease-imperial {collapsed
+        ? 'justify-center rounded-brand px-0'
+        : 'gap-2.5 rounded-r-brand pl-2.5 pr-3'} {active
+        ? 'border-primary bg-surface text-text-main'
+        : 'border-transparent text-text-muted hover:bg-surface-2 hover:text-text-main'}"
     >
-      <div class="flex items-center justify-between pb-3 border-b border-border-subtle">
-        <div class="flex items-center gap-2.5">
-          <div class="size-9 rounded-full flex items-center justify-center bg-amber-500/10 text-amber-500">
-            <span class="material-symbols-outlined text-[20px]">upgrade</span>
-          </div>
-          <div>
-            <h2 class="text-base font-semibold text-text-main">
-              Update 9router-go{updateInfo?.latestVersion ? ` to v${updateInfo.latestVersion}` : ''}
-            </h2>
-            <p class="text-xs text-text-muted">
-              Current version: v{version || '1.9.0'}
-            </p>
-          </div>
-        </div>
-        <button
-          type="button"
-          onclick={() => (showUpdateModal = false)}
-          class="p-1 rounded-lg text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-          aria-label="Close"
-        >
-          <span class="material-symbols-outlined text-[20px]">close</span>
-        </button>
-      </div>
-
-      {#if updateInfo?.releaseNotes}
-        <div class="p-3 rounded-lg bg-surface-2 border border-border-subtle text-xs text-text-muted leading-relaxed">
-          <p class="font-medium text-text-main mb-1">Release Notes:</p>
-          <p class="whitespace-pre-line">{updateInfo.releaseNotes}</p>
-        </div>
-      {/if}
-
-      <!-- Terminal Command Box -->
-      <div class="flex flex-col gap-1.5">
-        <label class="text-xs font-medium text-text-muted">Terminal Command</label>
-        <div class="flex items-center gap-2 p-2.5 rounded-xl bg-surface-2 border border-border-subtle">
-          <code class="text-xs font-mono text-amber-600 dark:text-amber-400 flex-1 truncate select-all">
-            {INSTALL_CMD}
-          </code>
-          <button
-            type="button"
-            onclick={copyInstallCmd}
-            class="px-2.5 py-1 text-xs rounded-lg bg-surface hover:bg-surface-3 border border-border-subtle text-text-main transition-colors cursor-pointer shrink-0 flex items-center gap-1"
-          >
-            <span class="material-symbols-outlined text-[14px]">content_copy</span>
-            <span>{copied ? 'Copied!' : 'Copy'}</span>
-          </button>
-        </div>
-      </div>
-
-      {#if updateStatus === 'updating'}
-        <div class="p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-blue-600 dark:text-blue-400 flex items-center gap-2 text-xs">
-          <span class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
-          <span>{updateMsg}</span>
-        </div>
-      {:else if updateStatus === 'success'}
-        <div class="p-3 rounded-xl bg-green-500/10 border border-green-500/20 text-green-600 dark:text-green-400 flex items-center gap-2 text-xs">
-          <span class="material-symbols-outlined text-[18px]">check_circle</span>
-          <span>{updateMsg}</span>
-        </div>
-      {:else if updateStatus === 'error'}
-        <div class="p-3 rounded-xl bg-red-500/10 border border-red-500/20 text-red-600 dark:text-red-400 flex items-center gap-2 text-xs">
-          <span class="material-symbols-outlined text-[18px]">error</span>
-          <span>{updateMsg}</span>
-        </div>
-      {/if}
-
-      <!-- Action buttons -->
-      <div class="flex items-center justify-end gap-2 pt-2 border-t border-border-subtle">
-        <button
-          type="button"
-          onclick={() => (showUpdateModal = false)}
-          disabled={isUpdating}
-          class="px-3.5 py-2 text-xs font-medium rounded-lg text-text-muted hover:text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-        >
-          Cancel
-        </button>
-        <button
-          type="button"
-          onclick={handleCopyAndShutdown}
-          disabled={isUpdating || shutdownCountdown > 0}
-          class="px-3.5 py-2 text-xs font-medium rounded-lg border border-border-subtle text-text-main hover:bg-surface-2 transition-colors cursor-pointer"
-        >
-          {shutdownCountdown > 0 ? `Stopping in ${shutdownCountdown}s...` : 'Copy & Shutdown'}
-        </button>
-        <button
-          type="button"
-          onclick={handleAutoUpdate}
-          disabled={isUpdating}
-          class="px-4 py-2 text-xs font-semibold rounded-lg bg-primary hover:bg-primary-hover text-white transition-colors cursor-pointer flex items-center gap-1.5 shadow-sm"
-        >
-          <span class="material-symbols-outlined text-[16px]">autorenew</span>
-          <span>{isUpdating ? 'Updating...' : 'Auto Update'}</span>
-        </button>
-      </div>
-    </div>
-  </div>
-{/if}
-
-<!-- Disconnected Overlay -->
-{#if isDisconnected}
-  <div class="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-sm p-6">
-    <div class="text-center p-8 bg-surface border border-border-subtle rounded-2xl shadow-2xl max-w-sm w-full animate-in fade-in">
-      <div class="flex items-center justify-center size-14 rounded-full bg-red-500/20 text-red-500 mx-auto mb-4">
-        <span class="material-symbols-outlined text-[28px]">power_off</span>
-      </div>
-      <h2 class="text-lg font-semibold text-text-main mb-1">Server Stopped</h2>
-      <p class="text-xs text-text-muted mb-4">
-        Now run <code class="px-1.5 py-0.5 rounded bg-surface-2 font-mono text-amber-500">9router-go update</code> in your terminal.
-      </p>
-      <button
-        type="button"
-        onclick={() => globalThis.location.reload()}
-        class="w-full py-2 px-4 rounded-lg bg-primary hover:bg-primary-hover text-white text-xs font-semibold transition-colors cursor-pointer"
-      >
-        Reload Dashboard
-      </button>
-    </div>
-  </div>
-{/if}
+      <Icon name={link.icon} class={active ? 'text-primary' : 'text-text-subtle transition-colors group-hover:text-text-muted'} />
+      {#if !collapsed}<span class="truncate">{link.label}</span>{/if}
+    </a>
+  </li>
+{/snippet}
 

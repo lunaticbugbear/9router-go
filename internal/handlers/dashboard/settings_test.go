@@ -94,6 +94,9 @@ func TestHandleUpdateSettings_PasswordChange(t *testing.T) {
 	if body["hasPassword"] != true {
 		t.Errorf("expected hasPassword=true, got %v", body["hasPassword"])
 	}
+	if body["usesDefaultPassword"] != false {
+		t.Errorf("expected usesDefaultPassword=false, got %v", body["usesDefaultPassword"])
+	}
 	if _, leaked := body["password"]; leaked {
 		t.Error("password hash must not be returned to the dashboard")
 	}
@@ -122,6 +125,22 @@ func TestHandleUpdateSettings_PasswordChange(t *testing.T) {
 	}
 	if h.verifyDashboardPassword("") {
 		t.Error("empty password should never verify")
+	}
+}
+
+func TestSanitizeSettings_InitialPasswordStatus(t *testing.T) {
+	t.Setenv("DATA_DIR", t.TempDir())
+	t.Setenv("INITIAL_PASSWORD", "env-password-for-test")
+
+	settings := sanitizeSettings(map[string]any{})
+	if settings["hasPassword"] != true {
+		t.Errorf("expected hasPassword=true with INITIAL_PASSWORD, got %v", settings["hasPassword"])
+	}
+	if settings["usesDefaultPassword"] != false {
+		t.Errorf("expected usesDefaultPassword=false with INITIAL_PASSWORD, got %v", settings["usesDefaultPassword"])
+	}
+	if _, ok := settings["initialPassword"]; ok {
+		t.Error("sanitized settings must not expose INITIAL_PASSWORD")
 	}
 }
 

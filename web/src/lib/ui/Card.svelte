@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Port of decolua/9router src/shared/components/Card.js
+  // Shared surface: semantic tokens keep dense views coherent in both themes.
   import type { Snippet } from 'svelte'
 
   let {
@@ -28,32 +28,30 @@
     none: '',
     xs: 'p-3',
     sm: 'p-4',
-    md: 'p-6',
-    lg: 'p-8',
+    md: 'p-4 sm:p-6',
+    lg: 'p-6 sm:p-8',
   }
 </script>
 
 <div
-  class="bg-surface border border-border-subtle rounded-[14px] {elev
-    ? 'shadow-[var(--shadow-elev)]'
-    : 'shadow-[var(--shadow-soft)]'} {hover
-    ? 'hover:shadow-[var(--shadow-warm)] hover:border-brand-500/30 transition-all cursor-pointer'
+  class="ui-panel min-w-0 {elev ? 'ui-frame shadow-elevated' : ''} {hover
+    ? 'hover:border-brass/50 hover:bg-surface-2 transition-colors duration-150 ease-imperial cursor-pointer'
     : ''} {paddings[padding]} {klass}"
 >
   {#if title || action}
-    <div class="flex items-center justify-between mb-4">
-      <div class="flex items-center gap-3">
+    <div class="mb-5 flex flex-wrap items-start justify-between gap-3">
+      <div class="flex min-w-0 items-start gap-3">
         {#if icon}
-          <div class="p-2 rounded-[10px] bg-bg text-text-muted">
+          <div class="flex size-9 shrink-0 items-center justify-center rounded-brand border border-border-subtle bg-surface-2 text-primary">
             {@render icon()}
           </div>
         {/if}
-        <div>
+        <div class="min-w-0">
           {#if title}
-            <h3 class="text-text-main font-semibold">{title}</h3>
+            <h3 class="text-[15px] font-semibold leading-snug text-text-main">{title}</h3>
           {/if}
           {#if subtitle}
-            <p class="text-sm text-text-muted">{subtitle}</p>
+            <p class="mt-1 text-sm leading-relaxed text-text-muted">{subtitle}</p>
           {/if}
         </div>
       </div>

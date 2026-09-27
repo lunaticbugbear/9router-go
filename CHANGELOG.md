@@ -3,6 +3,32 @@
 
 ## [Unreleased]
 
+### Proxy pool schema bootstrap
+
+- `9router init-db` now creates the `proxyPools` table. Existing installs whose canonical schema predates proxy pools can run the idempotent command to fix `/api/proxy-pools` returning 500; existing rows are untouched.
+
+### Dashboard save and scan feedback
+
+- CLI/IDE tool status scan failures are no longer converted into an empty status map; the page shows the error and keeps its scan action available for retry.
+- CLI tool configuration cards now keep their selected tool in component state, preventing a runtime crash when opening the configuration dialog.
+- Settings/Profile save failures now stay inline instead of interrupting the operator with a browser alert. Token Saver optimistic controls restore their previous values when a settings write fails.
+- Media provider toggle failures now report partial updates instead of silently discarding rejected connection writes; the page refreshes actual state afterward.
+- Settings/Profile now documents `9router init-db` for schema setup instead of implying tables migrate automatically at startup.
+- Quota single/bulk connection toggles report failures, and OAuth auto-ping now uses the existing settings PATCH API rather than a nonexistent method.
+- Quota connection-list failures are no longer swallowed into an empty list; the page shows the error and can retry.
+- Console Log, CLI tool scan, version, and changelog endpoints now accept the dashboard login session instead of requiring a client API key (they returned 401 "Invalid API key" when no key existed). An expired session now returns to the login page instead of rendering an empty dashboard.
+- CLI Tools: tool detail now has "Ask AI to set it up" when a provider is connected. It asks one of your own models (through the gateway, via the dashboard session) for tailored setup steps; API keys are redacted to `<your-api-key>` and nothing is executed automatically.
+- CLI Tools one-click setup (port of the original per-tool installers) for Claude Code, Codex, OpenCode, Hermes, GitHub Copilot (VS Code) and Claude Cowork: writes the gateway URL, a client key (auto-created "CLI tools (auto)" when none exists) and the chosen model into each tool's own config; "Remove" strips only 9router keys. Unrelated settings are kept, the original file is backed up once as `*.9router.bak`, and unparseable configs are refused instead of overwritten. Cowork omits the original's security-relaxation profile and MCP injection. Status cards now show "Connected" when a tool already points at 9router.
+- One-click setup now also covers Factory Droid, Open Claw, Kilo Code, Cline, Grok Build, DeepSeek TUI and jcode (all except Devin, which has no config to write: it authenticates with `devin auth login`). Grok Build is edited line by line so comments survive and the previous default model is restored on Remove. DeepSeek TUI is merged instead of overwriting the whole file as upstream did. Kilo, Cline and DeepSeek Remove only undo entries that point at this gateway. Open Claw per-agent `models.json` is written only for agent dirs inside your home directory.
+- Overview: gateway panel stats are a compact label/value list, compact empty states are lighter and equal height, shortcut hints no longer truncate, and the duplicate "Add provider" actions were removed (Shortcuts now links Quota).
+- Opening a media provider (e.g. TTS → Edge TTS) no longer throws `DataCloneError` from `history.pushState`, so its URL updates and Back works. Added the missing Ollama Search icon (was a 404).
+- Desktop sidebar can collapse to an icon rail (button in the sidebar header or Ctrl/⌘+B) and be resized by dragging its right edge (208–420 px; drag far left to collapse, double-click to reset, arrow keys when focused). Width and collapsed state persist per browser; the mobile drawer is unchanged.
+- Auth status distinguishes a stored or environment-provided password from the built-in default without returning secret values. Login/Profile copy follows that status.
+- Remote login with the built-in default now explains how to rotate it locally or configure `INITIAL_PASSWORD`; it no longer offers a password-change request that cannot establish a server session.
+- Login, Settings, API-key snippets, and CLI proxy instructions now show the gateway's current origin/port instead of hard-coding `20130` when the gateway runs elsewhere.
+- Upstream GitHub update checks and update controls are disabled by default for custom builds. A remote source is used only when `UPDATE_URL` or `UPDATE_REPO` is explicitly configured.
+- Endpoint API-key and tunnel-access save failures now appear inline instead of blocking the dashboard with browser alerts.
+
 ### Combo cycle validation
 
 - Renaming a combo without supplying `models` now validates its retained stored leaves, not an empty list. A rename that closes an alias↔combo loop returns HTTP 400 without changing the combo; an acyclic rename still succeeds.

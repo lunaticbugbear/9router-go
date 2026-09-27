@@ -44,12 +44,12 @@
   })
 </script>
 
-<div class="flex flex-col gap-3 pt-2">
+<div class="flex flex-col gap-3">
   <div class="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
     <!-- View selector dropdown -->
     <select
       bind:value={tableView}
-      class="w-full sm:w-auto rounded-lg border border-border bg-surface px-3 py-1.5 text-sm font-semibold text-text-main focus:outline-none focus:ring-2 focus:ring-brand-500/50 cursor-pointer"
+      class="ui-input w-full cursor-pointer text-sm font-semibold sm:w-auto"
     >
       {#each TABLE_OPTIONS as opt}
         <option value={opt.value}>{opt.label}</option>
@@ -57,12 +57,12 @@
     </select>
 
     <!-- Toggle: Costs | Tokens -->
-    <div class="inline-flex rounded-xl bg-surface border border-border p-1 shadow-sm self-start sm:self-auto">
+    <div class="inline-flex self-start rounded-brand border border-border bg-surface p-1 sm:self-auto">
       <button
         type="button"
         onclick={() => (viewMode = 'costs')}
-        class="rounded-lg px-3 py-1 text-xs font-semibold transition-colors cursor-pointer {viewMode === 'costs'
-          ? 'bg-brand-500 text-white shadow-sm'
+        class="cursor-pointer rounded-brand px-3 py-1 text-xs font-semibold transition-colors {viewMode === 'costs'
+          ? 'bg-primary/12 text-primary'
           : 'text-text-muted hover:text-text-main'}"
       >
         Costs
@@ -70,8 +70,8 @@
       <button
         type="button"
         onclick={() => (viewMode = 'tokens')}
-        class="rounded-lg px-3 py-1 text-xs font-semibold transition-colors cursor-pointer {viewMode === 'tokens'
-          ? 'bg-brand-500 text-white shadow-sm'
+        class="cursor-pointer rounded-brand px-3 py-1 text-xs font-semibold transition-colors {viewMode === 'tokens'
+          ? 'bg-primary/12 text-primary'
           : 'text-text-muted hover:text-text-main'}"
       >
         Tokens
@@ -80,41 +80,42 @@
   </div>
 
   <!-- Breakdown Table Card -->
-  <Card padding="none" class="overflow-hidden border border-border">
+  <Card padding="none" class="overflow-hidden">
     {#if tableData().length === 0}
-      <div class="p-8 text-center text-text-muted text-sm font-body">
-        No usage recorded for this period.
+      <div class="ui-empty m-3 flex flex-col items-center gap-1 text-center">
+        <p class="text-sm font-medium text-text-main">No usage recorded for this period</p>
+        <p class="text-xs leading-relaxed">Pick a wider period, or send a request to populate this table.</p>
       </div>
     {:else}
-      <div class="overflow-x-auto">
-        <table class="w-full text-left border-collapse text-xs font-body">
-          <thead class="bg-surface-2 border-b border-border text-text-muted uppercase text-[10px] font-semibold tracking-wider">
+      <div class="custom-scrollbar overflow-x-auto">
+        <table class="w-full min-w-[520px] border-collapse text-left text-xs">
+          <thead class="border-b border-border bg-bg-alt text-[10px] font-semibold uppercase tracking-wider text-text-muted">
             <tr>
-              <th class="py-3 px-4">
-                {tableView === 'model' ? 'Model' : tableView === 'account' ? 'Account' : tableView === 'apiKey' ? 'Key Name' : 'Endpoint'}
+              <th class="px-4 py-3" scope="col">
+                {tableView === 'model' ? 'Model' : tableView === 'account' ? 'Account' : tableView === 'apiKey' ? 'Key name' : 'Endpoint'}
               </th>
-              <th class="py-3 px-4">Provider</th>
-              <th class="py-3 px-4 text-right">Requests</th>
+              <th class="px-4 py-3" scope="col">Provider</th>
+              <th class="px-4 py-3 text-right" scope="col">Requests</th>
               {#if viewMode === 'costs'}
-                <th class="py-3 px-4 text-right">Total Cost</th>
+                <th class="px-4 py-3 text-right" scope="col">Total cost</th>
               {:else}
-                <th class="py-3 px-4 text-right">In Tokens</th>
-                <th class="py-3 px-4 text-right">Out Tokens</th>
-                <th class="py-3 px-4 text-right">Cached Tokens</th>
+                <th class="px-4 py-3 text-right" scope="col">In tokens</th>
+                <th class="px-4 py-3 text-right" scope="col">Out tokens</th>
+                <th class="px-4 py-3 text-right" scope="col">Cached</th>
               {/if}
-              <th class="py-3 px-4 text-right">Last Used</th>
+              <th class="px-4 py-3 text-right" scope="col">Last used</th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-border/60">
+          <tbody class="divide-y divide-border-subtle">
             {#each tableData() as row}
-              <tr class="hover:bg-surface-2/60 transition-colors">
-                <td class="py-3 px-4 font-mono font-medium text-text-main text-xs">
+              <tr class="transition-colors hover:bg-surface-2/60">
+                <td class="px-4 py-3 font-code text-xs font-medium text-text-main">
                   <div class="flex items-center gap-2">
                     {#if row.provider}
                       <img
                         src={getIconPath(row.provider)}
-                        alt={row.provider}
-                        class="w-4 h-4 object-contain rounded shrink-0 bg-surface-2 p-0.5 border border-border/40"
+                        alt=""
+                        class="size-4 shrink-0 rounded border border-border-subtle bg-surface-2 object-contain p-0.5"
                         onerror={(e) => {
                           (e.currentTarget as HTMLElement).style.display = 'none'
                         }}
@@ -124,13 +125,13 @@
                     <span class="truncate">{row.rawModel || row.accountName || row.keyName || row.endpoint || row.key}</span>
                   </div>
                 </td>
-                <td class="py-3 px-4">
+                <td class="px-4 py-3">
                   <div class="flex items-center gap-1.5">
                     {#if row.provider}
                       <img
                         src={getIconPath(row.provider)}
-                        alt={row.provider}
-                        class="w-3.5 h-3.5 object-contain rounded shrink-0"
+                        alt=""
+                        class="size-3.5 shrink-0 rounded object-contain"
                         onerror={(e) => {
                           (e.currentTarget as HTMLElement).style.display = 'none'
                         }}
@@ -140,25 +141,25 @@
                     <Badge variant="neutral" size="sm">{row.provider || 'unknown'}</Badge>
                   </div>
                 </td>
-                <td class="py-3 px-4 text-right font-mono font-semibold text-text-main">
+                <td class="px-4 py-3 text-right font-code font-semibold tabular-nums text-text-main">
                   {fmt(row.requests)}
                 </td>
                 {#if viewMode === 'costs'}
-                  <td class="py-3 px-4 text-right font-mono font-bold text-warning">
+                  <td class="px-4 py-3 text-right font-code font-bold tabular-nums text-warning">
                     {fmtCost(row.cost)}
                   </td>
                 {:else}
-                  <td class="py-3 px-4 text-right font-mono text-brand-500">
+                  <td class="px-4 py-3 text-right font-code tabular-nums text-primary">
                     {fmt(row.promptTokens)}
                   </td>
-                  <td class="py-3 px-4 text-right font-mono text-success">
+                  <td class="px-4 py-3 text-right font-code tabular-nums text-success">
                     {fmt(row.completionTokens)}
                   </td>
-                  <td class="py-3 px-4 text-right font-mono text-info">
+                  <td class="px-4 py-3 text-right font-code tabular-nums text-info">
                     {fmt(row.cachedTokens)}
                   </td>
                 {/if}
-                <td class="py-3 px-4 text-right text-text-muted whitespace-nowrap text-[11px]">
+                <td class="whitespace-nowrap px-4 py-3 text-right text-[11px] text-text-muted">
                   {timeAgo(row.lastUsed)}
                 </td>
               </tr>

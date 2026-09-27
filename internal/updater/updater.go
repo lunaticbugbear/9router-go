@@ -23,19 +23,12 @@ import (
 	"time"
 
 	"9router/proxy/internal/log"
-	"github.com/samber/lo"
 )
 
 // CurrentVersion is the active 9router-go application version.
 // Can be overridden at build time via -ldflags "-X 9router/proxy/internal/updater.CurrentVersion=1.8.8"
 // Default fallback is read from version.json at init if not overridden.
 var CurrentVersion = "1.9.0"
-
-// DefaultUpdateURL is the primary remote version manifest URL.
-var DefaultUpdateURL = "https://raw.githubusercontent.com/luqman-v1/9router-go/main/version.json"
-
-// DefaultGitHubRepo is the repository for GitHub Releases API fallback.
-var DefaultGitHubRepo = "luqman-v1/9router-go"
 
 // DefaultCheckInterval is the periodic background update check interval (6 hours).
 const DefaultCheckInterval = 6 * time.Hour
@@ -93,6 +86,9 @@ func IsAutoUpdateEnabled() bool {
 
 // GetCachedInfo returns the latest cached UpdateInfo or a default.
 func GetCachedInfo() *UpdateInfo {
+	if !HasUpdateSource() {
+		return disabledUpdateInfo()
+	}
 	cacheMu.RLock()
 	defer cacheMu.RUnlock()
 
@@ -100,6 +96,10 @@ func GetCachedInfo() *UpdateInfo {
 		return cachedInfo
 	}
 
+	return disabledUpdateInfo()
+}
+
+func disabledUpdateInfo() *UpdateInfo {
 	return &UpdateInfo{
 		CurrentVersion: CurrentVersion,
 		LatestVersion:  CurrentVersion,
@@ -108,6 +108,7 @@ func GetCachedInfo() *UpdateInfo {
 		OS:             runtime.GOOS,
 		Arch:           runtime.GOARCH,
 		CheckedAt:      time.Now().UTC().Format(time.RFC3339),
+		Source:         "disabled",
 	}
 }
 
@@ -120,6 +121,10 @@ func GetStatus() *UpdaterStatus {
 		lastCheck = lastCheckTime.UTC().Format(time.RFC3339)
 	}
 	cacheMu.RUnlock()
+	if !HasUpdateSource() {
+		info = disabledUpdateInfo()
+		lastCheck = ""
+	}
 
 	updateProgressMu.Lock()
 	inProg := updateInProgress
@@ -136,7 +141,7 @@ func GetStatus() *UpdaterStatus {
 		CurrentVersion:    CurrentVersion,
 		LatestVersion:     latestVer,
 		HasUpdate:         hasUp,
-		AutoUpdateEnabled: IsAutoUpdateEnabled(),
+		AutoUpdateEnabled: IsAutoUpdateEnabled() && HasUpdateSource(),
 		UpdateInProgress:  inProg,
 		LastCheckTime:     lastCheck,
 		CheckInterval:     DefaultCheckInterval.String(),
@@ -144,38 +149,56 @@ func GetStatus() *UpdaterStatus {
 	}
 }
 
-// CheckUpdate queries remote version sources (manifest or GitHub Releases API) and compares semver.
-func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
-	updateURL := lo.CoalesceOrEmpty(os.Getenv("UPDATE_URL"), DefaultUpdateURL)
+// HasUpdateSource reports whether the operator explicitly configured a release source.
+func HasUpdateSource() bool {
+	return strings.TrimSpace(os.Getenv("UPDATE_URL")) != "" || strings.TrimSpace(os.Getenv("UPDATE_REPO")) != ""
+}
 
-	// 1. Try manifest URL first
-	info, err := checkManifest(ctx, updateURL)
-	if err == nil && info != nil {
+// CheckUpdate queries only explicitly configured update sources. Upstream
+// releases are never contacted implicitly by a custom build.
+func CheckUpdate(ctx context.Context) (*UpdateInfo, error) {
+	updateURL := strings.TrimSpace(os.Getenv("UPDATE_URL"))
+	repo := strings.TrimSpace(os.Getenv("UPDATE_REPO"))
+	if updateURL == "" && repo == "" {
+		info := disabledUpdateInfo()
 		cacheMu.Lock()
 		cachedInfo = info
-		lastCheckTime = time.Now()
+		lastCheckTime = time.Time{}
 		cacheMu.Unlock()
 		return info, nil
 	}
 
-	// 2. Fallback to GitHub Releases API
-	repo := lo.CoalesceOrEmpty(os.Getenv("UPDATE_REPO"), DefaultGitHubRepo)
-	ghURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
-	log.Debug("updater", "checking github releases fallback", "repo", repo)
-
-	ghInfo, ghErr := checkGitHubReleases(ctx, ghURL)
-	if ghErr == nil && ghInfo != nil {
-		cacheMu.Lock()
-		cachedInfo = ghInfo
-		lastCheckTime = time.Now()
-		cacheMu.Unlock()
-		return ghInfo, nil
+	var manifestErr error
+	if updateURL != "" {
+		info, err := checkManifest(ctx, updateURL)
+		if err == nil && info != nil {
+			cacheMu.Lock()
+			cachedInfo = info
+			lastCheckTime = time.Now()
+			cacheMu.Unlock()
+			return info, nil
+		}
+		manifestErr = err
 	}
 
-	if err != nil {
-		return nil, fmt.Errorf("check update failed: manifest error (%w), github releases error (%w)", err, ghErr)
+	if repo != "" {
+		ghURL := fmt.Sprintf("https://api.github.com/repos/%s/releases/latest", repo)
+		log.Debug("updater", "checking explicitly configured GitHub release source", "repo", repo)
+		ghInfo, ghErr := checkGitHubReleases(ctx, ghURL)
+		if ghErr == nil && ghInfo != nil {
+			cacheMu.Lock()
+			cachedInfo = ghInfo
+			lastCheckTime = time.Now()
+			cacheMu.Unlock()
+			return ghInfo, nil
+		}
+		if manifestErr != nil {
+			return nil, fmt.Errorf("check update failed: manifest error (%w), github releases error (%w)", manifestErr, ghErr)
+		}
+		return nil, ghErr
 	}
-	return nil, ghErr
+
+	return nil, manifestErr
 }
 
 func checkManifest(ctx context.Context, url string) (*UpdateInfo, error) {
@@ -625,6 +648,12 @@ func ComputeSHA256(data []byte) string {
 // StartBackgroundCheck initiates recurring background update check and executes auto-update when enabled.
 func StartBackgroundCheck(ctx context.Context, initialAutoUpdate bool) {
 	SetAutoUpdate(initialAutoUpdate)
+	if !HasUpdateSource() {
+		SetAutoUpdate(false)
+		_, _ = CheckUpdate(ctx)
+		log.Info("updater", "remote update checks disabled; configure UPDATE_URL or UPDATE_REPO to enable")
+		return
+	}
 
 	// Check custom interval from env
 	interval := DefaultCheckInterval

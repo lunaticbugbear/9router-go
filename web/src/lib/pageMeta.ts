@@ -1,0 +1,30 @@
+import type { ActiveTab } from './router'
+
+/** Single source for page titles and one-line descriptions (TopBar breadcrumb + PageHeader). */
+export const PAGE_META: Record<ActiveTab, { title: string; description: string }> = {
+  login: { title: 'Sign in', description: 'Sign in to manage this gateway.' },
+  overview: { title: 'Overview', description: "Gateway status, today's traffic and shortcuts." },
+  endpoint: { title: 'Endpoint', description: 'Base URL, remote access and API keys.' },
+  connections: { title: 'Providers', description: 'Upstream accounts the gateway routes to.' },
+  combos: { title: 'Combos', description: 'Model chains with fallback and routing rules.' },
+  analytics: { title: 'Usage', description: 'Requests, tokens and cost across the gateway.' },
+  quota: { title: 'Quota', description: 'Remaining limits for each connected account.' },
+  'token-saver': { title: 'Token Saver', description: 'Compress prompts and responses before they reach a model.' },
+  'cli-tools': { title: 'CLI Tools', description: 'Point your coding tools at this gateway.' },
+  'media-embedding': { title: 'Embeddings', description: 'Vector embedding models.' },
+  'media-image': { title: 'Image', description: 'Text-to-image models.' },
+  'media-tts': { title: 'Text to Speech', description: 'Voice synthesis models.' },
+  'media-stt': { title: 'Speech to Text', description: 'Transcription models.' },
+  'media-video': { title: 'Video', description: 'Video generation models.' },
+  'media-systemone': { title: 'System One', description: 'Structured state evaluation models.' },
+  'media-web': { title: 'Web Fetch & Search', description: 'Search and scraping tools for agents.' },
+  'proxy-pools': { title: 'Proxy Pools', description: 'Outbound proxies and edge relays.' },
+  skills: { title: 'Skills', description: 'Links your AI agent can read to use this gateway.' },
+  'console-log': { title: 'Console Log', description: 'Live server output.' },
+  terminal: { title: 'Console Log', description: 'Live server output.' },
+  settings: { title: 'Settings', description: 'Dashboard access, security and preferences.' },
+  keys: { title: 'API Keys', description: 'Keys that clients use to call the gateway.' },
+  bounty: { title: 'Bug Bounty Assist', description: 'Scope and context for authorized testing.' },
+  personas: { title: 'Personas', description: 'Reusable system prompts.' },
+  'feature-flags': { title: 'Feature Flags', description: 'Optional gateway capabilities.' },
+}

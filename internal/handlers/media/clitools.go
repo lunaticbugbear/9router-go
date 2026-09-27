@@ -10,14 +10,18 @@ import (
 	"strings"
 	"time"
 
+	"9router/proxy/internal/clisetup"
 	"9router/proxy/internal/handlerutil"
 )
 
 // cliStatus is the per-tool installed/version shape the dashboard expects
 // (port of each Next <tool>-settings GET, trimmed to just install + version).
 type cliStatus struct {
-	Installed bool    `json:"installed"`
-	Version   *string `json:"version"`
+	Installed  bool    `json:"installed"`
+	Version    *string `json:"version"`
+	Has9Router bool    `json:"has9Router"`
+	ConfigPath string  `json:"configPath,omitempty"`
+	Installer  bool    `json:"installer"`
 }
 
 // cliVersionTimeout bounds each `--version` probe; install detection via
@@ -33,11 +37,11 @@ type toolDetector func(context.Context) (*cliStatus, error)
 // `cowork` checks Claude Desktop config dirs; `copilot` has no binary check
 // (reference hardcodes installed:true).
 type toolDef struct {
-	id        string
-	bin       string
-	hasVer    bool
-	dirCheck  func() bool
-	alwaysOn  bool
+	id       string
+	bin      string
+	hasVer   bool
+	dirCheck func() bool
+	alwaysOn bool
 }
 
 var cliTools = []toolDef{
@@ -88,8 +92,26 @@ func cliDetectors() map[string]toolDetector {
 }
 
 // detector returns the tool's status probe. Presence is checked on the user
-// PATH via exec.LookPath (scope: plain PATH, no extra-bins trick).
+// PATH via exec.LookPath (scope: plain PATH, no extra-bins trick). Tools with
+// an installer also report whether their config already points at 9router.
 func (t toolDef) detector() toolDetector {
+	base := t.presence()
+	setup, ok := clisetup.Lookup(t.id)
+	if !ok {
+		return base
+	}
+	return func(ctx context.Context) (*cliStatus, error) {
+		s, err := base(ctx)
+		if err != nil || s == nil {
+			return s, err
+		}
+		s.Installer = true
+		s.Has9Router, s.ConfigPath = setup.Status()
+		return s, nil
+	}
+}
+
+func (t toolDef) presence() toolDetector {
 	switch {
 	case t.alwaysOn:
 		return func(context.Context) (*cliStatus, error) {

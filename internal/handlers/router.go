@@ -13,11 +13,12 @@ import (
 	"9router/proxy/internal/middleware"
 	"9router/proxy/web"
 	json "encoding/json/v2"
-	"github.com/go-chi/chi/v5"
 	"net/http"
 	"net/http/pprof"
 	"os"
 	"strings"
+
+	"github.com/go-chi/chi/v5"
 )
 
 // Re-export TokenSaverConfig for root compatibility
@@ -262,6 +263,15 @@ func SetupDashboardRoutes(r chi.Router, repo *db.Repo) {
 	r.Post("/api/settings/database", dashH.HandleImportDatabase)
 	r.Post("/api/settings/proxy-test", dashH.HandleProxyTest)
 
+	r.Get("/api/cli-tools/all-statuses", media.NewCLIToolsHandler().HandleAllStatuses)
+	r.Post("/api/cli-tools/{tool}/configure", dashH.HandleCliToolConfigure)
+	r.Delete("/api/cli-tools/{tool}/configure", dashH.HandleCliToolReset)
+	r.Get("/translator/console-logs", HandleConsoleLogsGet)
+	r.Delete("/translator/console-logs", HandleConsoleLogsDelete)
+	r.Get("/translator/console-logs/stream", HandleConsoleLogsStream)
+	r.Get("/translator/console-logs/level", HandleConsoleLogsLevelGet)
+	r.Put("/translator/console-logs/level", HandleConsoleLogsLevelPut)
+
 	// Headroom token-compression proxy management (dashboard parity)
 	headroomH := media.NewHeadroomHandler(repo)
 	r.Get("/api/headroom/status", headroomH.HandleHeadroomStatus)
@@ -431,6 +441,14 @@ func SetupServerRouter(r chi.Router, repo *db.Repo, ts *TokenSaverConfig) {
 	// reachable with a valid API key or the local CLI token (upstream parity).
 	r.Group(func(r chi.Router) {
 		r.Use(middleware.RequireDashboardAuth(repo))
+		// The dashboard uses a session cookie, not a client API key. Keep the
+		// existing /api/models/test endpoint in the API-key domain for clients.
+		dashboardChatH := chat.NewChatHandler(repo, ts)
+		r.Post("/api/dashboard/models/test", dashboardChatH.HandleTestModel)
+		r.Get("/api/dashboard/models", dashboardChatH.HandleModels)
+		r.Post("/api/dashboard/cli-tools/assist", dashboardChatH.HandleCliToolAssist)
+		r.Get("/api/version", dashboardChatH.HandleVersion)
+		r.Get("/api/changelog", dashboardChatH.HandleChangelog)
 		SetupDashboardRoutes(r, repo)
 	})
 }

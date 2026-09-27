@@ -57,7 +57,9 @@ func ProvideServer(p ServerParams) *http.Server {
 	p.Lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			autoUpdate := p.CLIParams.AutoUpdate
-			if !autoUpdate && p.Repo != nil {
+			if !updater.HasUpdateSource() {
+				autoUpdate = false
+			} else if !autoUpdate && p.Repo != nil {
 				if settings, sErr := p.Repo.GetSettings(); sErr == nil && settings != nil {
 					autoUpdate = settings.AutoUpdate
 				}

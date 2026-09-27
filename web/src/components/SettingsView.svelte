@@ -27,6 +27,11 @@
   let isSaving = $state(false)
   let resetProvider = $state('antigravity')
   let isResetting = $state(false)
+  let gatewayPort = $state(
+    typeof window !== 'undefined'
+      ? window.location.port || (window.location.protocol === 'https:' ? '443' : '80')
+      : '20130'
+  )
 
   $effect(() => {
     formData = { ...settings }
@@ -101,7 +106,7 @@
             <h3 class="font-headline text-sm font-bold text-text-main">Local Machine Mode</h3>
           </div>
           <span class="font-code text-[10px] text-success bg-success/10 px-2 py-0.5 rounded border border-success/20">
-            Running on :20130
+            Running on :{gatewayPort}
           </span>
         </div>
 

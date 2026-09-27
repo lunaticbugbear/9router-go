@@ -4,11 +4,13 @@
   // this view renders whatever GET /api/settings/features returns instead of
   // hardcoding a list that could drift from the gateway's actual switches.
   import { onMount } from 'svelte'
-  import { CircleAlert, Loader2, RotateCcw } from 'lucide-svelte'
+  import { Loader2 } from 'lucide-svelte'
   import { api, type FeatureFlag } from '../api/client'
   import Badge from '../lib/ui/Badge.svelte'
   import Button from '../lib/ui/Button.svelte'
-  import Card from '../lib/ui/Card.svelte'
+  import EmptyState from '../lib/ui/EmptyState.svelte'
+  import PageHeader from '../lib/ui/PageHeader.svelte'
+  import Section from '../lib/ui/Section.svelte'
   import ConfirmModal from '../lib/ui/ConfirmModal.svelte'
 
   let flags = $state<FeatureFlag[]>([])
@@ -32,6 +34,13 @@
   const isPlanned = (f: FeatureFlag) => f.stage === 'planned'
 
   const chosenCount = $derived(flags.filter((f) => f.chosen).length)
+
+  // Section eyebrows follow the shell's numbered-section convention (the sidebar
+  // uses I / II / III). The registry can grow past twelve categories, so an
+  // out-of-range index falls back to the plain number instead of rendering a
+  // wrong or empty numeral.
+  const ROMAN = ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII']
+  const sectionNumeral = (n: number) => ROMAN[n - 1] ?? String(n)
 
   // Sections follow the API's category order; a flag whose category is missing
   // from that list still gets rendered, in a trailing section, because dropping
@@ -118,80 +127,69 @@
   }
 </script>
 
-<div class="mx-auto max-w-5xl space-y-4 p-4 md:p-6">
-  <header>
-    <h1 class="text-xl font-semibold">Feature Flags</h1>
-    <p class="mt-1 max-w-3xl text-sm text-text-muted">
-      Every optional capability the gateway can expose, in one place. A flag marked
-      <span class="font-medium text-text-main">stable</span> controls behavior that is wired up today, so the switch takes effect on the next request.
-      A flag marked <span class="font-medium text-text-main">planned</span> is registered but not built: it is listed so you can see what is coming, and its switch does nothing until that work lands.
-      Turning a flag off does not delete anything and does not change how the request plane behaves for features you never enabled.
-    </p>
-  </header>
+<div class="mx-auto flex w-full min-w-0 max-w-5xl flex-col gap-8">
+  <PageHeader tab="feature-flags">
+    {#snippet actions()}
+      {#if chosenCount > 0}
+        <Button variant="secondary" icon="reset" onclick={() => (confirmResetOpen = true)} disabled={resetting} loading={resetting}>
+          Reset {chosenCount} {chosenCount === 1 ? 'override' : 'overrides'}
+        </Button>
+      {/if}
+    {/snippet}
+  </PageHeader>
 
-  {#if error}
-    <div role="alert" aria-live="assertive" class="rounded border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
+  {#if error && flags.length > 0}
+    <div role="alert" aria-live="assertive" class="rounded-[4px] border border-danger/40 bg-danger/10 px-3 py-2 text-sm text-danger">{error}</div>
   {/if}
   {#if notice}
-    <div role="status" aria-live="polite" class="rounded border border-emerald-700/40 bg-emerald-950/30 px-3 py-2 text-sm text-emerald-300">{notice}</div>
+    <div role="status" aria-live="polite" class="rounded-[4px] border border-success/40 bg-success/10 px-3 py-2 text-sm text-success">{notice}</div>
   {/if}
 
   {#if loading}
-    <div class="space-y-4">
-      <div class="h-16 rounded-[14px] bg-surface border border-border-subtle animate-pulse"></div>
-      <div class="h-64 rounded-[14px] bg-surface border border-border-subtle animate-pulse"></div>
-      <div class="h-40 rounded-[14px] bg-surface border border-border-subtle animate-pulse"></div>
+    <div class="flex flex-col gap-6" role="status" aria-live="polite">
+      <span class="sr-only">Loading feature flags…</span>
+      <div class="ui-panel h-16 animate-pulse" aria-hidden="true"></div>
+      <div class="ui-panel h-64 animate-pulse" aria-hidden="true"></div>
+      <div class="ui-panel h-40 animate-pulse" aria-hidden="true"></div>
     </div>
+  {:else if error && flags.length === 0}
+    <div role="alert">
+      <EmptyState icon="error" title="Flags unavailable" description={`The gateway returned: ${error}`}>
+        {#snippet action()}
+          <Button variant="secondary" icon="refresh" onclick={() => reload()}>Retry</Button>
+        {/snippet}
+      </EmptyState>
+    </div>
+  {:else if flags.length === 0}
+    <EmptyState icon="flags" title="No feature flags" description="This gateway build has no optional capabilities." />
   {:else}
-    <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-      <div class="flex flex-wrap items-center gap-2">
-        <span class="inline-flex items-center gap-1.5 rounded-full border border-success/25 bg-success/10 px-2.5 py-1 text-xs font-medium text-success">
-          {stableCount} live
-        </span>
-        <span class="inline-flex items-center gap-1.5 rounded-full border border-warning/25 bg-warning/10 px-2.5 py-1 text-xs font-medium text-warning">
-          {plannedCount} planned
-        </span>
-        <span class="text-xs text-text-muted">
-          {#if chosenCount === 0}
-            No flag has been overridden yet.
-          {:else}
-            {chosenCount} {chosenCount === 1 ? 'flag' : 'flags'} overridden.
-          {/if}
-        </span>
-      </div>
-      <Button variant="outline" onclick={() => (confirmResetOpen = true)} disabled={resetting}>
-        {#if resetting}
-          <Loader2 class="w-3.5 h-3.5 animate-spin" />
-        {:else}
-          <RotateCcw class="w-3.5 h-3.5" />
-        {/if}
-        Reset all to defaults
-      </Button>
+    <div class="flex flex-wrap items-center gap-x-6 gap-y-2 border-b border-border-subtle pb-4 font-code text-xs text-text-muted">
+      <span><span class="text-success">{stableCount}</span> live</span>
+      <span><span class="text-warning">{plannedCount}</span> planned</span>
+      <span><span class="text-primary">{chosenCount}</span> overridden</span>
     </div>
-
-    {#if flags.length === 0}
-      {#if error}
-        <div class="rounded border border-border bg-surface-2/40 p-3 text-sm text-text-muted">
-          The flag list could not be loaded, so this view cannot say which capabilities exist. The error above is the gateway's own message.
-        </div>
-      {:else}
-        <div class="rounded border border-border bg-surface-2/40 p-3 text-sm text-text-muted">
-          The gateway reported no feature flags. That means this build has no optional capabilities registered — not that every capability is off.
-        </div>
-      {/if}
-    {:else}
-      {#each sections as section (section.name)}
-        <Card>
-          <h2 class="font-semibold">{section.name}</h2>
-          <ul class="mt-3 divide-y divide-border-subtle">
+    <div class="flex flex-col gap-10">
+      {#each sections as section, index (section.name)}
+        {@const liveInSection = section.flags.filter((flag) => !isPlanned(flag)).length}
+        {@const plannedInSection = section.flags.length - liveInSection}
+        <Section title={section.name} index={sectionNumeral(index + 1)}>
+          {#snippet actions()}
+            <span class="font-code text-[11px] text-text-muted">
+              {section.flags.length} flags{plannedInSection > 0 ? ` · ${plannedInSection} planned` : ''}
+            </span>
+          {/snippet}
+          <ul class="flex flex-col divide-y divide-border-subtle">
             {#each section.flags as flag (flag.id)}
               {@const planned = isPlanned(flag)}
               {@const busy = saving[flag.id] === true}
-              <li class="flex items-start justify-between gap-4 py-3">
+              <li class="flex items-start justify-between gap-4 py-4 first:pt-0">
                 <div class="min-w-0">
                   <div class="flex flex-wrap items-center gap-2">
                     <span id="flag-title-{flag.id}" class="text-sm font-medium text-text-main">{flag.title}</span>
                     <Badge tone={planned ? 'warning' : 'success'} size="sm">{flag.stage}</Badge>
+                    {#if flag.chosen}
+                      <Badge tone="primary" size="sm">overridden</Badge>
+                    {/if}
                     {#if busy}
                       <span class="inline-flex items-center gap-1 text-[11px] text-text-muted" role="status" aria-live="polite">
                         <Loader2 class="w-3 h-3 animate-spin" />
@@ -201,7 +199,7 @@
                   </div>
                   <p id="flag-desc-{flag.id}" class="mt-1 max-w-2xl text-xs leading-relaxed text-text-muted">{flag.description}</p>
                   {#if planned}
-                    <p class="mt-1 text-[11px] text-warning">Not built yet — toggle has no effect.</p>
+                    <p class="mt-1 text-[11px] leading-relaxed text-warning">Coming later</p>
                   {/if}
                 </div>
                 <div class="flex shrink-0 flex-col items-end gap-1 pt-0.5">
@@ -217,27 +215,26 @@
                     title={planned ? `${flag.title} is planned; this toggle has no effect yet` : `Turn ${flag.title} ${flag.on ? 'off' : 'on'}`}
                     disabled={planned || busy}
                     onclick={() => toggleFlag(flag, !flag.on)}
-                    class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed {flag.on
-                      ? 'bg-brand-500'
+                    class="relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors duration-150 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed {flag.on
+                      ? 'bg-primary/85'
                       : 'bg-surface-3'}"
                   >
                     <span
-                      class="inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform {flag.on
+                      class="inline-block h-3.5 w-3.5 transform rounded-full bg-bg shadow transition-transform duration-150 {flag.on
                         ? 'translate-x-[18px]'
                         : 'translate-x-[2px]'}"
                     ></span>
                   </button>
-                  <span class="text-[11px] text-text-muted">
-                    {flag.on ? 'on' : 'off'}
-                    {#if !flag.chosen}· default{/if}
+                  <span class="font-code text-[11px] text-text-muted">
+                    {flag.on ? 'on' : 'off'} · {flag.chosen ? 'overridden' : 'default'}
                   </span>
                 </div>
               </li>
             {/each}
           </ul>
-        </Card>
+        </Section>
       {/each}
-    {/if}
+    </div>
   {/if}
 
   <ConfirmModal
@@ -252,11 +249,4 @@
     onConfirm={resetAll}
   />
 
-  {#if error && !loading}
-    <div class="flex items-center gap-2 text-xs text-text-muted">
-      <CircleAlert class="w-3.5 h-3.5" />
-      <span>The list above may be stale. Reload to re-read the gateway's current state.</span>
-      <Button variant="ghost" size="sm" onclick={() => reload()}>Reload</Button>
-    </div>
-  {/if}
 </div>

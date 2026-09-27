@@ -6,9 +6,11 @@ import (
 	"net/http/httptest"
 	"os"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
+	"9router/proxy/internal/auth"
 	"9router/proxy/internal/db"
 )
 
@@ -47,6 +49,68 @@ func TestSetupRoutes(t *testing.T) {
 		t.Errorf("expected /chat/completions route to be registered, got status %d", w.Code)
 	}
 }
+
+func TestSetupServerRouter_ModelTestAuthDomains(t *testing.T) {
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create settings table: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	if err := repo.UpdateSettingsRaw(map[string]any{"requireLogin": false}); err != nil {
+		t.Fatalf("disable dashboard login for route test: %v", err)
+	}
+
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	dashboardRec := httptest.NewRecorder()
+	r.ServeHTTP(dashboardRec, httptest.NewRequest(http.MethodPost, "/api/dashboard/models/test", nil))
+	if dashboardRec.Code != http.StatusBadRequest {
+		t.Fatalf("dashboard route should reach handler without client key; got %d: %s", dashboardRec.Code, dashboardRec.Body.String())
+	}
+
+	clientRec := httptest.NewRecorder()
+	r.ServeHTTP(clientRec, httptest.NewRequest(http.MethodPost, "/api/models/test", nil))
+	if clientRec.Code != http.StatusUnauthorized {
+		t.Fatalf("client route must remain API-key protected; got %d: %s", clientRec.Code, clientRec.Body.String())
+	}
+}
+
+func TestSetupServerRouter_DashboardSessionReachesConsoleAndVersion(t *testing.T) {
+	t.Setenv("JWT_SECRET", "router-session-test-secret")
+	t.Setenv("DATA_DIR", t.TempDir())
+	database, cleanup := setupTestDB(t)
+	defer cleanup()
+	if _, err := database.Exec(`CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), data TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create settings table: %v", err)
+	}
+	repo := db.NewRepo(database)
+	if err := repo.UpdateSettingsRaw(map[string]any{"requireLogin": true}); err != nil {
+		t.Fatalf("seed settings: %v", err)
+	}
+	token, err := auth.Sign(auth.Secret(), time.Now())
+	if err != nil {
+		t.Fatalf("sign session: %v", err)
+	}
+
+	r := chi.NewRouter()
+	SetupServerRouter(r, repo, nil)
+
+	for _, path := range []string{"/translator/console-logs/level", "/api/version"} {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		// The dashboard also sends a stale client bearer; the session must win.
+		req.Header.Set("Authorization", "Bearer sk-not-a-stored-key")
+		req.AddCookie(&http.Cookie{Name: auth.CookieName, Value: token})
+		rec := httptest.NewRecorder()
+		r.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Errorf("%s with dashboard session: got %d: %s", path, rec.Code, rec.Body.String())
+		}
+	}
+}
+
 func TestSetupRoutes_OAuthEndpointsMounted(t *testing.T) {
 	database, cleanup := setupTestDB(t)
 	defer cleanup()

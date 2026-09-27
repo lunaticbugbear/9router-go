@@ -1,6 +1,7 @@
 <script lang="ts">
-  // Port of decolua/9router src/shared/components/Button.js
+  // Shared action hierarchy: primary is deliberate, quiet actions stay quiet.
   import type { Snippet } from 'svelte'
+  import Icon from './Icon.svelte'
 
   type Variant = 'primary' | 'secondary' | 'outline' | 'ghost' | 'danger' | 'success'
   type Size = 'sm' | 'md' | 'lg'
@@ -34,37 +35,40 @@
   } = $props()
   const variants: Record<Variant, string> = {
     primary:
-      'bg-brand-500 hover:bg-brand-600 text-white shadow-sm disabled:bg-surface-3 disabled:text-text-muted',
+      'bg-primary text-bg font-semibold uppercase tracking-[0.06em] hover:bg-primary-hover active:brightness-90 disabled:bg-surface-3 disabled:text-text-muted',
     secondary:
-      'bg-surface-2 hover:bg-surface-3 text-text-main border border-border disabled:opacity-50',
+      'border border-border bg-surface-2 text-text-main hover:bg-surface-3 hover:border-brass/50 disabled:opacity-50',
     outline:
-      'border border-border text-text-main hover:bg-surface-2 hover:border-brand-500/40',
+      'border border-brass/40 bg-transparent text-text-main hover:bg-surface-2 hover:border-brass/70',
     ghost: 'text-text-muted hover:bg-surface-2 hover:text-text-main',
-    danger: 'bg-danger hover:bg-danger/80 text-white shadow-sm disabled:bg-surface-3 disabled:text-text-muted',
-    success: 'bg-success hover:bg-success/80 text-white shadow-sm disabled:bg-surface-3 disabled:text-text-muted',
+    danger: 'border border-danger/40 bg-danger/12 text-danger hover:bg-danger/20 disabled:bg-surface-3 disabled:text-text-muted',
+    success: 'border border-success/40 bg-success/12 text-success hover:bg-success/20 disabled:bg-surface-3 disabled:text-text-muted',
   }
 
   const sizes: Record<Size, string> = {
-    sm: 'h-7 px-3 text-xs rounded-[8px]',
-    md: 'h-9 px-4 text-sm rounded-[10px]',
-    lg: 'h-11 px-6 text-sm rounded-[10px]',
+    sm: 'min-h-8 px-3 text-xs',
+    md: 'min-h-9 px-4 text-[13px]',
+    lg: 'min-h-11 px-6 text-[13px]',
   }
+
+  const shape = $derived(variant === 'primary' && size !== 'sm' ? 'ui-chamfer' : 'rounded-brand')
 </script>
 
 <button
   {type}
   {title}
-  class="inline-flex items-center justify-center gap-2 font-semibold transition-all duration-150 ease-out cursor-pointer active:scale-[0.97] disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 {variants[variant]} {sizes[size]} {fullWidth ? 'w-full' : ''} {klass}"
+  class="inline-flex items-center justify-center gap-2 {variant === 'primary' ? '' : 'font-medium tracking-[0.01em]'} transition-[background-color,border-color,color,filter] duration-150 ease-imperial cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed {variants[variant]} {sizes[size]} {shape} {fullWidth ? 'w-full' : ''} {klass}"
   disabled={disabled || loading}
+  aria-busy={loading}
   {onclick}
 >
   {#if loading}
-    <span class="material-symbols-outlined animate-spin text-[18px]">progress_activity</span>
+    <Icon name="spinner" spin />
   {:else if icon}
-    <span class="material-symbols-outlined text-[18px]">{icon}</span>
+    <Icon name={icon} />
   {/if}
   {@render children?.()}
   {#if iconRight && !loading}
-    <span class="material-symbols-outlined text-[18px]">{iconRight}</span>
+    <Icon name={iconRight} />
   {/if}
 </button>

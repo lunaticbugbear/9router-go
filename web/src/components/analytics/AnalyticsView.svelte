@@ -1,7 +1,6 @@
 <script lang="ts">
   import { api, getAuthHeaders, type ProviderConnection, type ProviderNode } from '../../api/client'
   import { PROVIDER_CATALOG } from '../../lib/providers'
-  import Card from '../../lib/ui/Card.svelte'
   import {
     fmt,
     timeAgo,
@@ -13,6 +12,7 @@
     type ActiveRequestItem,
     type RecentRequestItem
   } from './types'
+  import Button from '../../lib/ui/Button.svelte'
   import SummaryKpiCards from './SummaryKpiCards.svelte'
   import UsageBreakdownTable from './UsageBreakdownTable.svelte'
   import RequestDetailsTab from './RequestDetailsTab.svelte'
@@ -28,6 +28,11 @@
   let period = $state<Period>('today')
   let isFetching = $state(false)
   let stats = $state<StatsData>({})
+  // Fetch failures were console.error-only, so a 401/500 rendered as a screen of
+  // zeros (overview) or as "No request logs found" (details) — i.e. an outage
+  // looked like an empty database. Both are now surfaced with a retry.
+  let statsError = $state('')
+  let detailsError = $state('')
   let activeRequests = $state<ActiveRequestItem[]>([])
   let pulseProvider = $state<string>('')
   let lastProvider = $state<string>('')
@@ -69,14 +74,14 @@
     isFetching = true
     try {
       const res = await api.getUsageStats(targetPeriod)
-      if (res) {
-        stats = res
-        if (!lastProvider && Array.isArray(res.recentRequests) && res.recentRequests.length > 0) {
-          lastProvider = res.recentRequests[0].provider || ''
-        }
+      if (!res) throw new Error('empty usage response')
+      stats = res
+      statsError = ''
+      if (!lastProvider && Array.isArray(res.recentRequests) && res.recentRequests.length > 0) {
+        lastProvider = res.recentRequests[0].provider || ''
       }
     } catch (err) {
-      console.error('Failed to load usage stats:', err)
+      statsError = err instanceof Error ? err.message : String(err)
     } finally {
       isFetching = false
     }
@@ -88,13 +93,14 @@
       const limit = 20
       const offset = (page - 1) * limit
       const res = await api.getRequestDetails(limit, offset)
-      if (res && Array.isArray(res.details)) {
-        details = res.details
-        detailsTotal = res.total || 0
-        detailsPage = page
-      }
+      // A wrong shape used to be swallowed the same way a failure was.
+      if (!res || !Array.isArray(res.details)) throw new Error('malformed request-details response')
+      details = res.details
+      detailsTotal = res.total || 0
+      detailsPage = page
+      detailsError = ''
     } catch (err) {
-      console.error('Failed to load request details:', err)
+      detailsError = err instanceof Error ? err.message : String(err)
     } finally {
       detailsLoading = false
     }
@@ -290,23 +296,37 @@
 </script>
 
 <div class="flex min-w-0 flex-col gap-6 px-1 sm:px-0">
+  <!-- Page identity: the shell TopBar only carries a one-line breadcrumb. -->
+  <div class="flex flex-col gap-1">
+    <span class="ui-kicker">II · Observe</span>
+    <h1 class="ui-heading text-text-main">Usage &amp; Analytics</h1>
+    <p class="max-w-3xl text-sm leading-relaxed text-text-muted">
+      Token consumption, per-provider traffic and the request log. Figures come from the gateway's own
+      usage store, refreshed live while this tab is open.
+    </p>
+  </div>
+
   <!-- Tabs + Period Selector Row -->
-  <div class="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-    <div class="inline-flex rounded-xl bg-surface border border-border p-1 shadow-sm">
+  <div class="flex flex-col gap-3 border-b border-border-subtle pb-3 sm:flex-row sm:items-center sm:justify-between">
+    <div class="inline-flex rounded-brand border border-border bg-surface p-1" role="tablist" aria-label="Analytics view">
       <button
         type="button"
+        role="tab"
+        aria-selected={activeTab === 'overview'}
         onclick={() => (activeTab = 'overview')}
-        class="rounded-lg px-4 py-1.5 text-xs sm:text-sm font-medium transition-colors cursor-pointer {activeTab === 'overview'
-          ? 'bg-brand-500 text-white font-semibold shadow-sm'
+        class="cursor-pointer rounded-brand px-4 py-1.5 text-xs font-medium transition-colors sm:text-sm {activeTab === 'overview'
+          ? 'bg-primary/12 font-semibold text-primary'
           : 'text-text-muted hover:text-text-main'}"
       >
         Overview
       </button>
       <button
         type="button"
+        role="tab"
+        aria-selected={activeTab === 'details'}
         onclick={() => (activeTab = 'details')}
-        class="rounded-lg px-4 py-1.5 text-xs sm:text-sm font-medium transition-colors cursor-pointer {activeTab === 'details'
-          ? 'bg-brand-500 text-white font-semibold shadow-sm'
+        class="cursor-pointer rounded-brand px-4 py-1.5 text-xs font-medium transition-colors sm:text-sm {activeTab === 'details'
+          ? 'bg-primary/12 font-semibold text-primary'
           : 'text-text-muted hover:text-text-main'}"
       >
         Details
@@ -315,14 +335,14 @@
 
     {#if activeTab === 'overview'}
       <div class="flex items-center gap-1.5 self-start sm:self-auto">
-        <div class="inline-flex rounded-xl bg-surface border border-border p-1 shadow-sm">
+        <div class="inline-flex rounded-brand border border-border bg-surface p-1">
           {#each PERIODS as p}
             <button
               type="button"
               onclick={() => (period = p.value)}
               disabled={isFetching}
-              class="rounded-lg px-3 py-1 text-xs sm:text-sm font-medium transition-colors cursor-pointer {period === p.value
-                ? 'bg-brand-500 text-white font-semibold shadow-sm'
+              class="cursor-pointer rounded-brand px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 sm:text-sm {period === p.value
+                ? 'bg-primary/12 font-semibold text-primary'
                 : 'text-text-muted hover:text-text-main'}"
             >
               {p.label}
@@ -330,86 +350,118 @@
           {/each}
         </div>
         {#if isFetching}
-          <span class="w-2 h-2 rounded-full bg-brand-500 animate-ping"></span>
+          <span class="size-2 rounded-full bg-primary" aria-hidden="true"></span>
+          <span class="sr-only">Refreshing statistics</span>
         {/if}
       </div>
     {/if}
   </div>
 
   {#if activeTab === 'overview'}
-    <!-- 5 Overview KPI Cards -->
-    <SummaryKpiCards {stats} />
+    {#if statsError}
+      <div
+        class="flex flex-wrap items-center justify-between gap-2 rounded-brand border border-danger/40 bg-danger/10 px-3 py-2 text-xs text-danger"
+        role="alert"
+      >
+        <span class="min-w-0 truncate">Usage stats unavailable — {statsError}</span>
+        <Button variant="secondary" size="sm" onclick={() => loadStats(period)}>Retry</Button>
+      </div>
+    {/if}
+    <!-- KPI row -->
+    <section class="flex min-w-0 flex-col gap-3">
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <span class="ui-kicker">Key figures</span>
+        <span class="font-code text-[11px] text-text-subtle">period · {PERIODS.find((p) => p.value === period)?.label ?? period}</span>
+      </div>
+      <SummaryKpiCards {stats} />
+    </section>
 
     <!-- Topology + Recent Requests -->
-    <div class="grid min-w-0 grid-cols-1 items-stretch gap-2 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
-      <ProviderTopologyCard
-        providers={topologyProviders}
-        {activeRequests}
-        {pulseProvider}
-        {lastProvider}
-        {errorProvider}
-        onRefresh={() => loadStats(period)}
-      />
-      <!-- Recent Requests Card -->
-      <div class="bg-surface border border-border-subtle rounded-[14px] shadow-[var(--shadow-soft)] p-4 flex min-w-0 flex-col overflow-hidden" style="height: 480px">
-        <div class="px-1 py-2 border-b border-border shrink-0">
-          <span class="text-xs font-semibold text-text-muted uppercase tracking-wide">Recent Requests</span>
-        </div>
+    <section class="flex min-w-0 flex-col gap-3">
+      <span class="ui-kicker">Routing topology &amp; live traffic</span>
+      <div class="grid min-w-0 grid-cols-1 items-stretch gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(280px,1fr)]">
+        <ProviderTopologyCard
+          providers={topologyProviders}
+          {activeRequests}
+          {pulseProvider}
+          {lastProvider}
+          {errorProvider}
+          onRefresh={() => loadStats(period)}
+        />
+        <!-- Recent Requests Card -->
+        <div class="ui-panel flex min-w-0 flex-col overflow-hidden p-4 h-[320px] sm:h-[380px] lg:h-[480px]">
+          <div class="flex shrink-0 items-center justify-between gap-2 border-b border-border-subtle px-1 pb-2">
+            <span class="ui-kicker">Recent requests</span>
+            {#if stats.recentRequests?.length}
+              <span class="font-code text-[11px] tabular-nums text-text-subtle">{stats.recentRequests.length} rows</span>
+            {/if}
+          </div>
 
-        {#if !stats.recentRequests || stats.recentRequests.length === 0}
-          <div class="flex-1 flex items-center justify-center text-text-muted text-xs">
-            No requests recorded yet.
-          </div>
-        {:else}
-          <div class="flex-1 overflow-y-auto">
-            <table class="w-full table-fixed min-w-[280px] border-collapse text-xs">
-              <colgroup>
-                <col class="w-[20px]" />
-                <col />
-                <col class="w-[96px]" />
-                <col class="w-[56px]" />
-              </colgroup>
-              <thead class="sticky top-0 bg-bg z-10">
-                <tr class="border-b border-border">
-                  <th class="py-1.5 pl-3 text-left font-semibold text-text-muted"></th>
-                  <th class="py-1.5 text-left font-semibold text-text-muted">Model</th>
-                  <th class="py-1.5 text-right font-semibold text-text-muted whitespace-nowrap">In / Out</th>
-                  <th class="py-1.5 pr-3 text-right font-semibold text-text-muted whitespace-nowrap">When</th>
-                </tr>
-              </thead>
-              <tbody class="divide-y divide-border/50 font-mono text-[11px]">
-                {#each stats.recentRequests as req}
-                  <tr class="hover:bg-bg-subtle transition-colors">
-                    <td class="py-1.5 pl-3 align-middle">
-                      <span class="mx-auto block w-1.5 h-1.5 rounded-full {req.status === 'ok' || req.status === 'success' ? 'bg-success' : 'bg-error'}"></span>
-                    </td>
-                    <td class="py-1.5 pr-2 min-w-0">
-                      <span class="block truncate font-mono text-[11px]" title={req.model}>{req.model}</span>
-                    </td>
-                    <td class="py-1.5 pr-3 text-right whitespace-nowrap">
-                      <span class="text-primary">{fmt(req.promptTokens)}↑</span>
-                      <span class="text-success">{fmt(req.completionTokens)}↓</span>
-                    </td>
-                    <td class="py-1.5 pr-3 text-right text-text-muted whitespace-nowrap text-[10px]">
-                      {timeAgo(req.timestamp)}
-                    </td>
+          {#if !stats.recentRequests || stats.recentRequests.length === 0}
+            <div class="ui-empty m-1 flex flex-1 flex-col items-center justify-center gap-1 text-center">
+              <p class="text-xs font-medium text-text-main">No requests recorded yet</p>
+              <p class="text-[11px] leading-relaxed">
+                Rows appear here as soon as a client sends its first request in this period.
+              </p>
+            </div>
+          {:else}
+            <div class="min-h-0 flex-1 overflow-y-auto overflow-x-auto">
+              <table class="w-full min-w-[260px] table-fixed border-collapse text-xs">
+                <colgroup>
+                  <col class="w-[18px]" />
+                  <col />
+                  <col class="w-[104px]" />
+                  <col class="w-[58px]" />
+                </colgroup>
+                <thead class="sticky top-0 z-10 bg-surface">
+                  <tr class="border-b border-border-subtle">
+                    <th class="py-2 pl-1" scope="col"><span class="sr-only">Status</span></th>
+                    <th class="py-2 text-left font-semibold text-text-muted" scope="col">Model</th>
+                    <th class="py-2 text-right font-semibold text-text-muted whitespace-nowrap" scope="col">In / Out</th>
+                    <th class="py-2 pr-1 text-right font-semibold text-text-muted whitespace-nowrap" scope="col">When</th>
                   </tr>
-                {/each}
-              </tbody>
-            </table>
-          </div>
-        {/if}
+                </thead>
+                <tbody class="divide-y divide-border-subtle font-code text-[11px]">
+                  {#each stats.recentRequests as req}
+                    <tr class="transition-colors hover:bg-surface-2/60">
+                      <td class="py-2 pl-1 align-middle">
+                        <span
+                          class="block size-1.5 rounded-full {req.status === 'ok' || req.status === 'success' ? 'bg-success' : 'bg-danger'}"
+                          title={req.status === 'ok' || req.status === 'success' ? 'Succeeded' : 'Failed'}
+                        ></span>
+                      </td>
+                      <td class="min-w-0 py-2 pr-2">
+                        <span class="block truncate" title={req.model}>{req.model}</span>
+                      </td>
+                      <td class="py-2 pr-3 text-right whitespace-nowrap tabular-nums">
+                        <span class="text-primary">{fmt(req.promptTokens)}↑</span>
+                        <span class="text-success">{fmt(req.completionTokens)}↓</span>
+                      </td>
+                      <td class="py-2 pr-1 text-right text-[10px] whitespace-nowrap text-text-subtle">
+                        {timeAgo(req.timestamp)}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+        </div>
       </div>
-    </div>
+    </section>
 
     <!-- Breakdown Table -->
-    <UsageBreakdownTable {stats} />
+    <section class="flex min-w-0 flex-col gap-3">
+      <span class="ui-kicker">Breakdown</span>
+      <UsageBreakdownTable {stats} />
+    </section>
   {:else}
     <RequestDetailsTab
       {details}
       {detailsTotal}
       {detailsPage}
       {detailsLoading}
+      error={detailsError}
       onPageChange={loadDetails}
       onRefresh={() => loadDetails(detailsPage)}
     />

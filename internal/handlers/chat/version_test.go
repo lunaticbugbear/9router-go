@@ -54,6 +54,8 @@ func TestHandleVersionStatus(t *testing.T) {
 }
 
 func TestHandleToggleAutoUpdate(t *testing.T) {
+	t.Setenv("UPDATE_URL", "https://updates.example.test/manifest")
+	t.Setenv("UPDATE_REPO", "")
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
 	repo := db.NewRepo(database)
@@ -76,6 +78,24 @@ func TestHandleToggleAutoUpdate(t *testing.T) {
 	settings, err := repo.GetSettings()
 	if err != nil || !settings.AutoUpdate {
 		t.Errorf("expected settings.AutoUpdate to be true in DB, err=%v", err)
+	}
+}
+
+func TestHandleToggleAutoUpdate_DisabledWithoutSource(t *testing.T) {
+	t.Setenv("UPDATE_URL", "")
+	t.Setenv("UPDATE_REPO", "")
+	updater.SetAutoUpdate(true)
+
+	handler := NewChatHandler(nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/version/auto-update", strings.NewReader(`{"enabled":true}`))
+	rec := httptest.NewRecorder()
+	handler.HandleToggleAutoUpdate(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when no release source is configured, got %d", rec.Code)
+	}
+	if updater.IsAutoUpdateEnabled() {
+		t.Error("auto-update must remain disabled without an explicit source")
 	}
 }
 
@@ -139,6 +159,27 @@ func TestHandleTriggerUpdate_UpToDate(t *testing.T) {
 	json.Unmarshal(rec.Body.Bytes(), &res)
 	if res["status"] != "up_to_date" {
 		t.Errorf("expected status 'up_to_date', got %v", res["status"])
+	}
+}
+
+func TestHandleTriggerUpdate_DisabledWithoutSource(t *testing.T) {
+	t.Setenv("UPDATE_URL", "")
+	t.Setenv("UPDATE_REPO", "")
+
+	handler := NewChatHandler(nil, nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/version/update", strings.NewReader(`{}`))
+	rec := httptest.NewRecorder()
+	handler.HandleTriggerUpdate(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when self-update is disabled, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var response map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response["status"] != "disabled" {
+		t.Errorf("status = %v, want disabled", response["status"])
 	}
 }
 

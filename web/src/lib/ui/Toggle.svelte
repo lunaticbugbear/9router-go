@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Port of decolua/9router src/shared/components/Toggle.js (switch)
+  // Accessible hit target with a compact visual switch inside.
   let {
     checked = false,
     disabled = false,
@@ -30,13 +30,14 @@
     const fn = onChange || onchange
     fn?.(!checked)
   }}
-  class="relative inline-flex {size === 'sm' ? 'h-4 w-7' : 'h-5 w-9'} items-center rounded-full transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed {checked
-    ? 'bg-brand-500'
+  class="relative inline-flex shrink-0 items-center rounded-full border border-border/70 transition-colors duration-150 ease-imperial cursor-pointer disabled:cursor-not-allowed disabled:opacity-50 {size === 'sm' ? 'h-7 w-11' : 'h-8 w-12'} {checked
+    ? 'bg-primary'
     : 'bg-surface-3'}"
 >
   <span
-    class="inline-block {size === 'sm' ? 'h-3 w-3' : 'h-3.5 w-3.5'} transform rounded-full bg-white shadow transition-transform {checked
-      ? (size === 'sm' ? 'translate-x-[13px]' : 'translate-x-[18px]')
-      : 'translate-x-[2px]'}"
+    aria-hidden="true"
+    class="inline-block transform rounded-full bg-[#ece5d6] shadow transition-transform duration-150 ease-imperial {size === 'sm' ? 'size-3.5' : 'size-4'} {checked
+      ? (size === 'sm' ? 'translate-x-[25px]' : 'translate-x-[26px]')
+      : (size === 'sm' ? 'translate-x-[5px]' : 'translate-x-[6px]')}"
   ></span>
 </button>

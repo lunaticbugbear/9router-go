@@ -6,6 +6,7 @@
   import Button from '../lib/ui/Button.svelte'
   import Input from '../lib/ui/Input.svelte'
   import { api, type Settings } from '../api/client'
+  import { notifications } from '../lib/notifications'
 
   interface Props {
     settings?: Settings
@@ -142,25 +143,37 @@
     }
   })
 
-  async function patchSetting(patch: Partial<Settings>) {
+  // Persist one setting and tell the operator when the gateway refuses it.
+  // Every toggle on this page is optimistic, so a silent failure left the UI
+  // claiming a saver was on while the gateway still had it off.
+  async function patchSetting(patch: Partial<Settings>): Promise<boolean> {
     try {
       await api.updateSettings(patch)
       onRefresh?.()
+      return true
     } catch (error) {
       console.log('Error updating setting:', error)
+      notifications.error(error instanceof Error ? error.message : 'Failed to save setting')
+      return false
     }
   }
 
   async function handleToggleRTK(value: boolean) {
+    const previous = rtkEnabled
     rtkEnabled = value
-    await patchSetting({ rtkEnabled: value })
+    if (!(await patchSetting({ rtkEnabled: value }))) {
+      rtkEnabled = previous
+    }
   }
 
   async function handleToggleHeadroom(value: boolean) {
     const nextUrl = headroomUrl.trim() || 'http://localhost:8787'
+    const previous = headroomEnabled
     headroomUrl = nextUrl
     headroomEnabled = value
-    await patchSetting({ headroomEnabled: value, headroomUrl: nextUrl })
+    if (!(await patchSetting({ headroomEnabled: value, headroomUrl: nextUrl }))) {
+      headroomEnabled = previous
+    }
   }
 
   async function handleHeadroomUrlBlur() {
@@ -362,10 +375,15 @@
 
   async function toggleExtraActive(extra: string, value: boolean) {
     extrasActionError = ''
+    const previous = extra === 'code' ? codeAware : kompress
     if (extra === 'code') codeAware = value
     if (extra === 'ml') kompress = value
     const key = extra === 'code' ? 'headroomCodeAware' : 'headroomKompress'
-    await patchSetting({ [key]: value })
+    if (!(await patchSetting({ [key]: value }))) {
+      if (extra === 'code') codeAware = previous
+      if (extra === 'ml') kompress = previous
+      return
+    }
     if (!headroomStatus.running) return
     restartingProxy = true
     try {
@@ -379,24 +397,28 @@
     }
   }
 
-  function handleToggleCaveman(value: boolean) {
+  async function handleToggleCaveman(value: boolean) {
+    const previous = cavemanEnabled
     cavemanEnabled = value
-    patchSetting({ cavemanEnabled: value })
+    if (!(await patchSetting({ cavemanEnabled: value }))) cavemanEnabled = previous
   }
 
-  function handleSelectCavemanLevel(levelId: string) {
+  async function handleSelectCavemanLevel(levelId: string) {
+    const previous = cavemanLevel
     cavemanLevel = levelId
-    patchSetting({ cavemanLevel: levelId })
+    if (!(await patchSetting({ cavemanLevel: levelId }))) cavemanLevel = previous
   }
 
-  function handleTogglePonytail(value: boolean) {
+  async function handleTogglePonytail(value: boolean) {
+    const previous = ponytailEnabled
     ponytailEnabled = value
-    patchSetting({ ponytailEnabled: value })
+    if (!(await patchSetting({ ponytailEnabled: value }))) ponytailEnabled = previous
   }
 
-  function handleSelectPonytailLevel(levelId: string) {
+  async function handleSelectPonytailLevel(levelId: string) {
+    const previous = ponytailLevel
     ponytailLevel = levelId
-    patchSetting({ ponytailLevel: levelId })
+    if (!(await patchSetting({ ponytailLevel: levelId }))) ponytailLevel = previous
   }
 
   function copyInstallCommand() {
