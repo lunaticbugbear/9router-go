@@ -156,10 +156,11 @@ Recent frontend fixes in this handover:
 
 Latest validation:
 - Safe Go validation passed with:
-  `env -u DB_PATH -u DATA_DIR -u UPDATE_URL -u UPDATE_REPO go test ./... -skip '^(TestLiveE2E|TestHandleChatCompletions_PersonaAppliedAndSelectorStripped)'`.
-  A raw unfiltered run reaches provider-live tests; DeepSeek returned network
-  reset/401. The persona selector test also unexpectedly reached real DeepSeek
-  despite its local test setup, so it is excluded pending repair.
+  `env -u DB_PATH -u DATA_DIR -u UPDATE_URL -u UPDATE_REPO go test ./... -skip '^TestLiveE2E'`.
+  The persona selector test previously reached real DeepSeek despite its local
+  test setup and had to be excluded; that is fixed (see "Open Items"). A raw
+  unfiltered run still reaches the `TestLiveE2E_*` tests, which read the live DB
+  and need real credentials/network; exclude them by name.
 - `npx tsc -b` and `npx vite build` passed after the Login recovery and dynamic
   origin/port updates. Focused Go auth tests passed for remote default-password
   rejection and password-source status.
@@ -236,13 +237,15 @@ All committed locally (no push). Highlights:
 
 ## Open Items (for OMP)
 
-1. **Persona test still hits the network.**
-   `TestHandleChatCompletions_PersonaAppliedAndSelectorStripped` (in
-   `internal/handlers/chat`) reaches real DeepSeek despite its local test setup,
-   so it is always excluded through `-skip`. Find where the test's provider or
-   upstream URL escapes the stub (it probably resolves a real provider or base
-   URL from the catalog or env), point it at an `httptest` server, then drop it
-   from the skip list.
+1. **Persona test still hits the network. — FIXED 2026-09-28.**
+   Root cause was the shared fixture, not the persona test: `setupChatTestDB`
+   seeded `conn-1` (deepseek) and `conn-2` (groq) with no `baseUrl`, so they
+   resolved the real provider catalog and forwarded to `api.deepseek.com`. Nine
+   tests leaked live traffic, not just the persona one. The fixture now points
+   those rows at a local `httptest` stub that answers 401, which preserves the
+   existing fallback behavior (first connection fails, the next is tried). The
+   persona test no longer needs `-skip`, and
+   `TestChatTestFixtureConnectionsAreLocal` guards against reintroduction.
 2. **No live verification yet.** Ask AI and every one-click installer were
    tested only with unit tests (temp HOME) and mocked browser data. The live DB
    has 0 providers, so neither has run against a real provider. To verify:

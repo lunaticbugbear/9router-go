@@ -3,6 +3,12 @@
 
 ## [Unreleased]
 
+### Test hygiene: no live provider calls from the chat suite
+
+- The shared chat test fixture (`setupChatTestDB`) seeded provider connections without a `baseUrl`, so any test that did not delete those rows resolved the real provider catalog and forwarded to `api.deepseek.com`. Nine tests did exactly that — the persona/selector tests among them — and passed only because the live API answered. The fixture now points its seeded connections at a local stub upstream, keeping every test on localhost while preserving the fallback behavior those tests already relied on (first connection fails, the next is tried).
+- `TestHandleChatCompletions_PersonaAppliedAndSelectorStripped` no longer needs the `-skip` exclusion, so the documented safe suite is now `go test ./... -skip '^TestLiveE2E'`. The persona test's runtime dropped from ~0.74s to ~0.01s, which is what it costs when it does not cross the network.
+- Added `TestChatTestFixtureConnectionsAreLocal`: it fails if any fixture connection lacks a `baseUrl` or points somewhere other than localhost, so a future fixture edit cannot silently reintroduce live traffic.
+
 ### Token Saver (RTK) output parity
 
 - Token Saver no longer rewrites ordinary conversation text. It previously truncated any long `text` block — including user and assistant messages — as if it were tool output. Only tool output is compressed now, matching the upstream Rust `rtk-ai/rtk` and the `open-sse/rtk` port.

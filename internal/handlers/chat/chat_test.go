@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -30,7 +31,11 @@ func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("OpenDatabase failed: %v", err)
 	}
 
+	var stubUpstream *httptest.Server
 	cleanup := func() {
+		if stubUpstream != nil {
+			stubUpstream.Close()
+		}
 		database.Close()
 		os.Remove(tmpFile.Name())
 	}
@@ -40,6 +45,18 @@ func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("CreateTables failed: %v", err)
 	}
 
+	// Stand-in upstream for the provider connections seeded below. Tests that do
+	// not delete these rows would otherwise forward to the real api.deepseek.com:
+	// the connection resolves, the request leaves the process, and the test only
+	// passes because the live API happens to answer. Pointing them at a local
+	// 401 keeps every test on localhost while preserving the behavior the
+	// fallback path already exercised (first connection fails, next is tried).
+	stubUpstream = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"message":"stub upstream: provider not configured for this test","type":"authentication_error"}}`))
+	}))
+
 	// Seed API key (used by auth/resolve tests)
 	if _, err := database.Exec(`INSERT INTO apiKeys (id, key, name, isActive, createdAt) VALUES
 		('1', 'test-api-key', 'Test Key', 1, '2026-07-18T00:00:00Z')`); err != nil {
@@ -48,7 +65,7 @@ func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
 	}
 
 	// Seed provider connections (used by resolve/fallback tests)
-	deepseekData, _ := json.Marshal(map[string]any{"apiKey": "sk-test-deepseek-key"})
+	deepseekData, _ := json.Marshal(map[string]any{"apiKey": "sk-test-deepseek-key", "baseUrl": stubUpstream.URL})
 	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-1', 'deepseek', 'apikey', 'DeepSeek Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
 		string(deepseekData)); err != nil {
@@ -56,7 +73,7 @@ func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("failed to seed providerConnections: %v", err)
 	}
 
-	groqData, _ := json.Marshal(map[string]any{"apiKey": "gsk-test-groq-key"})
+	groqData, _ := json.Marshal(map[string]any{"apiKey": "gsk-test-groq-key", "baseUrl": stubUpstream.URL})
 	if _, err := database.Exec(`INSERT INTO providerConnections (id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
 		('conn-2', 'groq', 'apikey', 'Groq Test', 1, 1, ?, '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`,
 		string(groqData)); err != nil {
@@ -78,6 +95,55 @@ func setupChatTestDB(t *testing.T) (*sql.DB, func()) {
 		t.Fatalf("failed to seed combo: %v", err)
 	}
 	return database, cleanup
+}
+
+// The shared fixture's provider connections must point at a local stub. A
+// connection whose data has no baseUrl falls through to the provider catalog
+// (api.deepseek.com), so any test that does not delete these rows would leave
+// the process and hit the live API — passing only because the real service
+// happened to answer. This pins the fixture so that regression cannot return
+// silently.
+func TestChatTestFixtureConnectionsAreLocal(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	rows, err := database.Query(`SELECT id, data FROM providerConnections`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+
+	seen := 0
+	for rows.Next() {
+		var id, data string
+		if err := rows.Scan(&id, &data); err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal([]byte(data), &fields); err != nil {
+			t.Fatalf("connection %s has unparseable data: %v", id, err)
+		}
+		baseURL, _ := fields["baseUrl"].(string)
+		if baseURL == "" {
+			t.Errorf("connection %s has no baseUrl: the request would fall through to the real provider", id)
+			continue
+		}
+		u, err := url.Parse(baseURL)
+		if err != nil {
+			t.Errorf("connection %s has an unparseable baseUrl %q: %v", id, baseURL, err)
+			continue
+		}
+		if u.Hostname() != "127.0.0.1" && u.Hostname() != "localhost" {
+			t.Errorf("connection %s points at %s: tests must not reach a live provider", id, u.Hostname())
+		}
+		seen++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	if seen == 0 {
+		t.Fatal("expected the fixture to seed at least one connection")
+	}
 }
 func TestResolveModel_ProviderSlashModel(t *testing.T) {
 	database, cleanup := setupChatTestDB(t)
