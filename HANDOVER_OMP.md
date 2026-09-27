@@ -156,11 +156,14 @@ Recent frontend fixes in this handover:
 
 Latest validation:
 - Safe Go validation passed with:
-  `env -u DB_PATH -u DATA_DIR -u UPDATE_URL -u UPDATE_REPO go test ./... -skip '^TestLiveE2E'`.
-  The persona selector test previously reached real DeepSeek despite its local
-  test setup and had to be excluded; that is fixed (see "Open Items"). A raw
-  unfiltered run still reaches the `TestLiveE2E_*` tests, which read the live DB
-  and need real credentials/network; exclude them by name.
+  `env -u DB_PATH -u DATA_DIR -u UPDATE_URL -u UPDATE_REPO go test ./...`.
+  No `-skip` is needed: the tests that read the live DB or contact real
+  providers are now opt-in behind `NINEROUTER_LIVE_E2E=1` (`requireLiveE2E`),
+  so a plain run touches neither `$HOME/.9router` nor the network. The persona
+  selector test previously reached real DeepSeek despite its local test setup
+  and had to be excluded; that is fixed (see "Open Items"). Do not set
+  `NINEROUTER_LIVE_E2E=1` for routine validation — the live tests spend real
+  quota and the relay rate-limits.
 - `npx tsc -b` and `npx vite build` passed after the Login recovery and dynamic
   origin/port updates. Focused Go auth tests passed for remote default-password
   rejection and password-source status.
@@ -246,6 +249,9 @@ All committed locally (no push). Highlights:
    existing fallback behavior (first connection fails, the next is tried). The
    persona test no longer needs `-skip`, and
    `TestChatTestFixtureConnectionsAreLocal` guards against reintroduction.
+   The live-test gate now covers chat **and** media: `requireLiveE2E` is applied
+   to 27 tests across 7 files, including the media TTS/voices tests that were
+   silently reaching `www.bing.com`, `opencode.ai`, and `api.elevenlabs.io`.
 2. **No live verification yet.** Ask AI and every one-click installer were
    tested only with unit tests (temp HOME) and mocked browser data. The live DB
    has 0 providers, so neither has run against a real provider. To verify:
@@ -258,9 +264,29 @@ All committed locally (no push). Highlights:
 ## Next Work
 
 The all-pages overhaul remains incomplete. The safe Go suite and frontend
-checks pass; provider-live E2E tests were excluded because they need real
-credentials/network access. Remaining browser failure cases are
-Console Log clear/reconnect, Quota bulk partial failure, and Media partial
-multi-connection failure. Continue with deeper Login/Endpoint/Quota review after
-those. Keep the single-port embedded gateway and temporary DB for browser tests;
-avoid OMP subagents until its session-persistence failure is understood.
+checks pass; provider-live E2E tests are opt-in via `NINEROUTER_LIVE_E2E=1`
+because they need real credentials/network access. The three previously
+outstanding browser failure cases are now accounted for:
+
+- Console Log clear/reconnect — verified earlier in this handover (clear failure
+  retains buffered lines; stopping and restarting the embedded gateway moved the
+  status `Live` -> `Reconnecting…` -> `Live` without a page reload).
+- Quota bulk partial failure — implemented and verified: bulk toggles use
+  `Promise.allSettled`, report succeeded/failed counts in a persistent banner,
+  roll back only the failed rows, and reconcile with the server afterward. Row
+  failures show an inline error.
+- Media partial multi-connection failure — implemented and verified: multi-
+  connection writes report partial results per connection, a total failure does
+  not read as success, and state refreshes afterward.
+
+Honest gap: those UI changes were verified by type-check, lint, and build, plus
+the failure-injection runs recorded earlier in this handover. This session did
+not re-run browser failure injection for them. Provider icons were validated by
+`npm run check:icons` (0 failures) rather than by browser inspection of the
+9 placeholder entries, and the "Test all" pacing/rate-limit reporting was
+validated by type-check/lint/build and by reading the implementation, not by a
+live throttled run. Treat a browser re-check as the remaining verification step.
+
+Continue with deeper Login/Endpoint/Quota review. Keep the single-port embedded
+gateway and temporary DB for browser tests; avoid OMP subagents until its
+session-persistence failure is understood.

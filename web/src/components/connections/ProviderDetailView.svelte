@@ -220,8 +220,11 @@
   let isImportingLiveCatalogModels = $state(false)
   let modelImportMessage = $state('')
   let modelImportFailed = $state(false)
+  // 'ratelimited' is deliberately distinct from 'error': the provider throttled
+  // the probe, so the model itself was not proven broken.
+  type ModelTestStatus = 'ok' | 'error' | 'ratelimited' | 'testing'
   let compatibleTestId = $state<string | null>(null)
-  let compatibleTestResults = $state<Record<string, 'ok' | 'error'>>({})
+  let compatibleTestResults = $state<Record<string, ModelTestStatus>>({})
   let compatibleTestErrors = $state<Record<string, string | null>>({})
   let compatibleRows = $derived.by(() => {
     const rows: Array<{ id: string; source: 'custom' | 'legacyAlias'; alias?: string }> = []
@@ -290,11 +293,18 @@
   let activeProxyDropdownId = $state<string | null>(null)
   let updatingProxyConnId = $state<string | null>(null)
   let copiedModelId = $state<string | null>(null)
-  let modelTestStatuses = $state<Record<string, 'ok' | 'error' | 'testing'>>({})
+  let modelTestStatuses = $state<Record<string, ModelTestStatus>>({})
   let modelTestErrors = $state<Record<string, string | null>>({})
   let isTestingAllModels = $state(false)
   let stopTestingAllModels = false
-  let modelTestSummary = $state<{ total: number; completed: number; passed: number; failed: number; stopped: boolean } | null>(null)
+  let modelTestSummary = $state<{
+    total: number
+    completed: number
+    passed: number
+    failed: number
+    rateLimited: number
+    stopped: boolean
+  } | null>(null)
 
   // Modals state
   let showRiskNoticeModal = $state(false)
@@ -1723,31 +1733,72 @@
     setTimeout(() => (copiedModelId = null), 2000)
   }
 
-  async function testModel(modelId: string): Promise<boolean> {
+  async function testModel(modelId: string): Promise<ModelTestStatus> {
     modelTestStatuses[modelId] = 'testing'
     modelTestErrors[modelId] = null
+    const fail = (message: string): ModelTestStatus => {
+      const status: ModelTestStatus = isRateLimitError(message) ? 'ratelimited' : 'error'
+      modelTestStatuses[modelId] = status
+      modelTestErrors[modelId] = message
+      return status
+    }
     try {
       const res = await api.testModel(`${storageAlias}/${modelId}`)
       if (res.ok) {
         modelTestStatuses[modelId] = 'ok'
         modelTestErrors[modelId] = null
-        return true
-      } else {
-        modelTestStatuses[modelId] = 'error'
-        const err = res.error || 'Model test failed'
-        modelTestErrors[modelId] = err
+        return 'ok'
       }
+      return fail(res.error || 'Model test failed')
     } catch (err) {
-      modelTestStatuses[modelId] = 'error'
-      const msg = err instanceof Error ? err.message : 'Model test failed'
-      modelTestErrors[modelId] = msg
+      return fail(err instanceof Error ? err.message : 'Model test failed')
     }
-    return false
   }
 
   function briefModelTestError(error: string): string {
     const summary = error.split(' Available models:')[0]
     return summary.length > 180 ? `${summary.slice(0, 177)}...` : summary
+  }
+
+  // Shared row presentation so both model lists render the four test states
+  // (testing / ok / ratelimited / error) the same way.
+  function modelTestIconName(status: ModelTestStatus | undefined): string {
+    if (status === 'ok') return 'success'
+    if (status === 'ratelimited') return 'hourglass'
+    if (status === 'error') return 'error'
+    return 'lab'
+  }
+
+  function modelTestToneClass(status: ModelTestStatus | undefined): string {
+    if (status === 'ok') return 'text-success'
+    if (status === 'ratelimited') return 'text-warning'
+    if (status === 'error') return 'text-danger'
+    return ''
+  }
+
+  // Delay between Test all requests. The upstream relay pools cap requests per
+  // window (observed: "pool rate limit: max 20 per 60s"); firing the whole list
+  // back-to-back made every model after the cap report a 429 as a failure, so
+  // the run looked broken when the provider was merely throttling.
+  const TEST_ALL_PAUSE_MS = 3000
+  // When the pool does throttle, back off instead of pressing on at the same
+  // cadence, and let the delay decay back to the base pause after a clean result.
+  const TEST_ALL_MAX_PAUSE_MS = 30000
+
+  // isRateLimitError reports whether a test failure is upstream throttling
+  // rather than a genuinely unusable model.
+  function isRateLimitError(message: string): boolean {
+    return /(^|\D)429(\D|$)|rate limit|rate_limit|too many requests/i.test(message)
+  }
+
+  // Waits in short slices so Stop stays responsive during a long backoff
+  // instead of being blocked until the whole delay elapses.
+  async function waitForNextModelTest(ms: number) {
+    const slice = 250
+    for (let waited = 0; waited < ms; waited += slice) {
+      if (stopTestingAllModels) return
+      await new Promise((resolve) => setTimeout(resolve, Math.min(slice, ms - waited)))
+    }
   }
 
   async function testAllModels(compatible = false) {
@@ -1757,19 +1808,29 @@
     const alias = compatible ? displayAlias() : storageAlias
     stopTestingAllModels = false
     isTestingAllModels = true
-    modelTestSummary = { total: ids.length, completed: 0, passed: 0, failed: 0, stopped: false }
+    modelTestSummary = { total: ids.length, completed: 0, passed: 0, failed: 0, rateLimited: 0, stopped: false }
+    let pauseMs = TEST_ALL_PAUSE_MS
     try {
-      for (const id of ids) {
+      for (const [index, id] of ids.entries()) {
         if (stopTestingAllModels || (compatible ? displayAlias() : storageAlias) !== alias) {
           modelTestSummary = { ...modelTestSummary, stopped: true }
           break
         }
-        const passed = compatible ? await handleTestCompatibleModel(id) : await testModel(id)
+        // Pace the run: without this the pool's per-window cap turns every
+        // later model into a 429 "failure".
+        if (index > 0) await waitForNextModelTest(pauseMs)
+        if (stopTestingAllModels) {
+          modelTestSummary = { ...modelTestSummary, stopped: true }
+          break
+        }
+        const status = compatible ? await handleTestCompatibleModel(id) : await testModel(id)
+        pauseMs = status === 'ratelimited' ? Math.min(pauseMs * 2, TEST_ALL_MAX_PAUSE_MS) : TEST_ALL_PAUSE_MS
         modelTestSummary = {
           ...modelTestSummary,
           completed: modelTestSummary.completed + 1,
-          passed: modelTestSummary.passed + (passed ? 1 : 0),
-          failed: modelTestSummary.failed + (passed ? 0 : 1),
+          passed: modelTestSummary.passed + (status === 'ok' ? 1 : 0),
+          failed: modelTestSummary.failed + (status === 'error' ? 1 : 0),
+          rateLimited: modelTestSummary.rateLimited + (status === 'ratelimited' ? 1 : 0),
         }
       }
     } finally {
@@ -1938,29 +1999,29 @@
     }
   }
 
-  async function handleTestCompatibleModel(modelId: string): Promise<boolean> {
-    if (compatibleTestId) return false
+  async function handleTestCompatibleModel(modelId: string): Promise<ModelTestStatus> {
+    if (compatibleTestId) return 'error'
     compatibleTestId = modelId
     compatibleTestErrors[modelId] = null
+    const fail = (message: string): ModelTestStatus => {
+      const status: ModelTestStatus = isRateLimitError(message) ? 'ratelimited' : 'error'
+      compatibleTestResults[modelId] = status
+      compatibleTestErrors[modelId] = message
+      return status
+    }
     try {
       const res = await api.testModel(`${displayAlias()}/${modelId}`)
       if (res.ok) {
         compatibleTestResults[modelId] = 'ok'
         compatibleTestErrors[modelId] = null
-        return true
-      } else {
-        compatibleTestResults[modelId] = 'error'
-        const err = res.error || 'Model test failed'
-        compatibleTestErrors[modelId] = err
+        return 'ok'
       }
+      return fail(res.error || 'Model test failed')
     } catch (err) {
-      compatibleTestResults[modelId] = 'error'
-      const msg = err instanceof Error ? err.message : 'Model test failed'
-      compatibleTestErrors[modelId] = msg
+      return fail(err instanceof Error ? err.message : 'Model test failed')
     } finally {
       compatibleTestId = null
     }
-    return false
   }
 
   function copyCompatibleModel(modelId: string) {
@@ -2840,7 +2901,7 @@
     {#if isTestingAllModels || modelTestSummary}
       <p class="text-xs text-text-muted" role="status">
         {#if isTestingAllModels}<button type="button" class="mr-2 text-danger underline" onclick={() => (stopTestingAllModels = true)}>Stop</button>{/if}
-        {modelTestSummary?.completed}/{modelTestSummary?.total} tested · {modelTestSummary?.passed} passed · {modelTestSummary?.failed} failed{modelTestSummary?.stopped ? ' · Stopped' : ''}
+        {modelTestSummary?.completed}/{modelTestSummary?.total} tested · {modelTestSummary?.passed} passed · {modelTestSummary?.failed} failed{#if modelTestSummary?.rateLimited} · <span class="text-warning">{modelTestSummary?.rateLimited} rate limited</span>{/if}{modelTestSummary?.stopped ? ' · Stopped' : ''}
       </p>
     {/if}
 
@@ -2916,9 +2977,10 @@
                   {row.source === 'legacyAlias' ? 'Alias' : 'Custom'}
                 </span>
                 {#if tStatus === 'ok'}<span class="font-code text-[10px] text-success">Passed</span>{/if}
+                {#if tStatus === 'ratelimited'}<span class="font-code text-[10px] text-warning">Rate limited</span>{/if}
                 {#if tStatus === 'error'}<span class="font-code text-[10px] text-danger">Failed</span>{/if}
               </div>
-              {#if tError}<p class="mt-1 break-words text-xs text-danger" title={tError} role="status">{briefModelTestError(tError)}</p>{/if}
+              {#if tError}<p class="mt-1 break-words text-xs {tStatus === 'ratelimited' ? 'text-warning' : 'text-danger'}" title={tError} role="status">{briefModelTestError(tError)}</p>{/if}
             </div>
 
             <div class="flex shrink-0 items-center gap-0.5">
@@ -2930,8 +2992,8 @@
                 aria-label={`Test ${row.id}`}
                 class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:cursor-wait disabled:opacity-50"
               >
-                <Icon name={isTestingRow ? 'spinner' : tStatus === 'ok' ? 'success' : tStatus === 'error' ? 'error' : 'lab'} spin={isTestingRow}
-                  class={tStatus === 'ok' ? 'text-success' : tStatus === 'error' ? 'text-danger' : ''} />
+                <Icon name={isTestingRow ? 'spinner' : modelTestIconName(tStatus)} spin={isTestingRow}
+                  class={modelTestToneClass(tStatus)} />
               </button>
               <button
                 type="button"
@@ -3004,7 +3066,7 @@
     {#if isTestingAllModels || modelTestSummary}
       <p class="mb-4 text-xs text-text-muted" role="status">
         {#if isTestingAllModels}<button type="button" class="mr-2 text-danger underline" onclick={() => (stopTestingAllModels = true)}>Stop</button>{/if}
-        {modelTestSummary?.completed}/{modelTestSummary?.total} tested · {modelTestSummary?.passed} passed · {modelTestSummary?.failed} failed{modelTestSummary?.stopped ? ' · Stopped' : ''}
+        {modelTestSummary?.completed}/{modelTestSummary?.total} tested · {modelTestSummary?.passed} passed · {modelTestSummary?.failed} failed{#if modelTestSummary?.rateLimited} · <span class="text-warning">{modelTestSummary?.rateLimited} rate limited</span>{/if}{modelTestSummary?.stopped ? ' · Stopped' : ''}
       </p>
     {/if}
 
@@ -3093,10 +3155,11 @@
                 {#if model.caps?.vision}<span class="inline-flex items-center gap-1"><Icon name="eye" size={12} />Vision</span>{/if}
                 {#if model.caps?.reasoning}<span class="inline-flex items-center gap-1"><Icon name="sparkles" size={12} />Reasoning</span>{/if}
                 {#if testStatus === 'ok'}<span class="text-success">Test passed</span>{/if}
+                {#if testStatus === 'ratelimited'}<span class="text-warning">Test rate limited</span>{/if}
                 {#if testStatus === 'error'}<span class="text-danger">Test failed</span>{/if}
               </div>
               {#if modelTestErrors[model.id]}
-                <p class="mt-1 break-words text-xs text-danger" title={modelTestErrors[model.id] || ''} role="status">{briefModelTestError(modelTestErrors[model.id] || '')}</p>
+                <p class="mt-1 break-words text-xs {testStatus === 'ratelimited' ? 'text-warning' : 'text-danger'}" title={modelTestErrors[model.id] || ''} role="status">{briefModelTestError(modelTestErrors[model.id] || '')}</p>
               {/if}
             </div>
 
@@ -3105,8 +3168,8 @@
                 title={isTestingThis ? 'Testing model' : modelTestErrors[model.id] || (testStatus === 'ok' ? 'Test passed' : 'Test model')}
                 aria-label={`Test ${model.id}`}
                 class="flex size-9 cursor-pointer items-center justify-center rounded-brand text-text-muted transition-colors hover:bg-surface-3 hover:text-text-main disabled:cursor-wait disabled:opacity-60">
-                <Icon name={isTestingThis ? 'spinner' : testStatus === 'ok' ? 'success' : testStatus === 'error' ? 'error' : 'lab'} spin={isTestingThis}
-                  class={testStatus === 'ok' ? 'text-success' : testStatus === 'error' ? 'text-danger' : ''} />
+                <Icon name={isTestingThis ? 'spinner' : modelTestIconName(testStatus)} spin={isTestingThis}
+                  class={modelTestToneClass(testStatus)} />
               </button>
               <button type="button" onclick={() => copyModelId(model.id)}
                 title={copiedModelId === model.id ? 'Copied' : 'Copy model ID'}

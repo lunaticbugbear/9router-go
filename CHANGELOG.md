@@ -3,11 +3,13 @@
 
 ## [Unreleased]
 
-### Test hygiene: no live provider calls from the chat suite
+### Test hygiene: no live provider calls from the default suite
 
 - The shared chat test fixture (`setupChatTestDB`) seeded provider connections without a `baseUrl`, so any test that did not delete those rows resolved the real provider catalog and forwarded to `api.deepseek.com`. Nine tests did exactly that — the persona/selector tests among them — and passed only because the live API answered. The fixture now points its seeded connections at a local stub upstream, keeping every test on localhost while preserving the fallback behavior those tests already relied on (first connection fails, the next is tried).
-- `TestHandleChatCompletions_PersonaAppliedAndSelectorStripped` no longer needs the `-skip` exclusion, so the documented safe suite is now `go test ./... -skip '^TestLiveE2E'`. The persona test's runtime dropped from ~0.74s to ~0.01s, which is what it costs when it does not cross the network.
 - Added `TestChatTestFixtureConnectionsAreLocal`: it fails if any fixture connection lacks a `baseUrl` or points somewhere other than localhost, so a future fixture edit cannot silently reintroduce live traffic.
+- The tests that genuinely need real credentials or real upstreams are now opt-in behind `NINEROUTER_LIVE_E2E=1`. A new `requireLiveE2E(t)` gate skips them otherwise, so a plain `go test ./...` no longer reads the live database under `~/.9router` and no longer contacts real providers. 27 tests across 7 files are gated (`internal/handlers/chat/{live_e2e,gemini38_live,muse_spark_e2e,version}_test.go`, `internal/handlers/media/{e2e_media,extras_endpoints,systemone,tts_synthesizers}_test.go`). Because the gate replaces the name-based exclusion, the documented safe suite no longer needs `-skip`: it is just `go test ./...`. The persona test's runtime dropped from ~0.74s to ~0.01s, which is what it costs when it does not cross the network.
+- The media suite was leaking the same way: its TTS and voices tests reached real services (`www.bing.com` for Edge TTS, `opencode.ai`, `api.elevenlabs.io`) even though they looked like ordinary unit tests, and only passed while those services answered. They are now behind the same gate.
+- `TestHandleChangelog` no longer passes only because the network answers. The handler serves `CHANGELOG.md` from the working directory first, and the old test ran from the package directory, missed the relative path, and silently fell through to the `raw.githubusercontent.com` fallback. It now runs in a temp directory holding a fixture and asserts that fixture is what gets served. The remote fallback is covered separately by `TestHandleChangelog_RemoteFallback`, which swaps `http.DefaultTransport` for a stub that records the requested URLs and serves a canned body, so both branches are exercised without leaving the machine.
 
 ### Token Saver (RTK) output parity
 
@@ -16,6 +18,26 @@
 - `tool_result` blocks marked `is_error: true` are skipped so error traces reach the model intact.
 - OpenAI tool messages with array content and `function_call_output` with a text-block array are compressed (previously only the string forms were handled).
 - Added the upstream never-worse guard: a filter result that is empty or larger than the raw text falls back to the raw text, and blobs above the 10 MiB `RAW_CAP` are passed through.
+
+### Provider icons: no 404s for catalog entries without artwork
+
+- The dashboard built `/providers/<id>.png` for every catalog entry, including the 9 header-name placeholder entries (`user-agent`, `originator`, `x-codebuddy-request`, `anthropic-version`, …) that ship no PNG and instead declare a Material Symbols `icon`. Each render requested a file that does not exist and logged a 404. `getIconPath()` now returns the provider's own PNG only when that PNG is actually shipped, and otherwise falls back to a shared icon.
+- Availability is derived from the real `web/public/providers` listing at build time through a `provider-icons` Vite plugin that exposes `virtual:provider-icons`, rather than a hand-maintained allowlist, so adding or removing a PNG is picked up automatically and the set cannot drift from the catalog.
+- `web/public/providers/opencode-zen.png` was restored from the repository history (it had been dropped from this branch while the catalog still referenced it).
+- Added `npm run check:icons` (`web/scripts/check-provider-icons.mjs`): it resolves `getIconPath` for every catalog id and alias through Vite's SSR loader and fails if any of them maps to a PNG that is not on disk. It currently reports 0 failures over 195 id/alias probes.
+
+### Model "Test all": pacing and honest rate-limit reporting
+
+- "Test all" no longer reports upstream throttling as a broken model. Requests are paced with a 3 s pause between models instead of firing the whole list back-to-back, which is what produced the 429s in the first place.
+- A 429 is now its own state. `ModelTestStatus` gained `ratelimited`, distinct from `error`: the row shows "Rate limited" rather than "Failed", and the run summary separates passed, failed, and rate-limited counts. The row's detail text is rendered in the warning tone, not the danger tone, so a throttled probe does not read as a defect.
+- When the pool does throttle, the delay doubles per throttled result up to a 30 s ceiling and decays back to the base pause after a clean result, so a throttled run slows down instead of hammering the relay. Stop stays responsive during a long backoff because the wait is sliced.
+- The per-window cap is the upstream relay's, not 9router's: the observed limit is "pool rate limit: max 20 per 60s" returned by the relay itself. 9router only paces its own requests in response.
+
+### Quota bulk toggle and media provider toggles: real failure reporting
+
+- Quota bulk connection toggles use `Promise.allSettled` and report succeeded and failed counts in a persistent banner that stays on screen after the toast expires, so a partial failure cannot be mistaken for a clean success. Only the rows whose write failed roll back — a snapshot of the pre-write server state decides which — and the page reconciles with the server afterward rather than trusting local state.
+- Quota row-level toggle failures now show an inline error on the card and roll back that row alone.
+- Media provider toggles that write several connections report partial results (updated/failed with a reason per connection) and treat a total failure as a failure rather than success, then refresh actual connection state. A provider with an in-flight toggle is marked busy so a second click cannot race the first.
 
 ### Proxy pool schema bootstrap
 

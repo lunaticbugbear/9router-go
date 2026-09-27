@@ -87,6 +87,8 @@ func TestHandleSystemone_Opencode_Mock(t *testing.T) {
 }
 
 func TestHandleSystemone_Live_Opencode(t *testing.T) {
+	requireLiveE2E(t)
+
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}

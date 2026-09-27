@@ -12,6 +12,8 @@ import (
 )
 
 func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
+	requireLiveE2E(t)
+
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -65,6 +67,8 @@ func TestIntegration_OpenCode_MuseSpark_Messages(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
+	requireLiveE2E(t)
+
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -109,6 +113,8 @@ func TestIntegration_OpenCode_MuseSpark_Messages_NonStreaming(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
+	requireLiveE2E(t)
+
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -161,6 +167,8 @@ func TestIntegration_OpenCode_MuseSpark_ChatCompletions(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark_MultiTurnWithTools(t *testing.T) {
+	requireLiveE2E(t)
+
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -232,6 +240,8 @@ func TestIntegration_OpenCode_MuseSpark_MultiTurnWithTools(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_MuseSpark13_ChatCompletions(t *testing.T) {
+	requireLiveE2E(t)
+
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()
@@ -268,6 +278,8 @@ func TestIntegration_OpenCode_MuseSpark13_ChatCompletions(t *testing.T) {
 }
 
 func TestIntegration_OpenCode_UnionAlpha_Messages(t *testing.T) {
+	requireLiveE2E(t)
+
 	executor.RegisterAll()
 	database, cleanup := setupChatTestDB(t)
 	defer cleanup()

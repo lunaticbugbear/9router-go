@@ -67,6 +67,23 @@
   let deletingId = $state<string | null>(null)
   let togglingId = $state<string | null>(null)
   let bulkToggling = $state(false)
+  // Per-row write failures, keyed by connection id. Rendered inline on the card
+  // so a failed toggle is visible even after the toast has auto-dismissed.
+  let toggleErrors = $state<Record<string, string>>({})
+  // Last bulk run summary, kept until dismissed so a partial failure cannot be
+  // mistaken for success once the toast expires.
+  let bulkResult = $state<{
+    action: 'enabled' | 'disabled'
+    total: number
+    succeeded: number
+    failed: string[]
+  } | null>(null)
+
+  function connectionLabelById(id: string): string {
+    const row = connections.find((c) => c.id === id)
+    if (!row) return id
+    return getConnectionLabel(row) || providerLabel(row.provider)
+  }
 
   // Filters
   let providerFilter = $state('all')
@@ -402,16 +419,36 @@
     }
   }
 
+  function setConnectionActive(id: string, active: boolean): void {
+    connections = connections.map((c) => (c.id === id ? { ...c, isActive: active ? 1 : 0 } : c))
+  }
+
   async function handleToggleConnectionActive(id: string, nextActive: boolean): Promise<void> {
+    const row = connections.find((c) => c.id === id)
+    if (!row) return
+    // Remember the last known server value so a failed write can roll back to
+    // it instead of leaving the optimistic switch lying about server state.
+    const previousActive = isActiveConn(row)
+    const label = getConnectionLabel(row) || providerLabel(row.provider)
+
     togglingId = id
+    toggleErrors = { ...toggleErrors, [id]: '' }
+    setConnectionActive(id, nextActive)
+
     try {
       await api.updateConnection(id, { isActive: nextActive ? 1 : 0 })
-      connections = connections.map((c) =>
-        c.id === id ? { ...c, isActive: nextActive ? 1 : 0 } : c,
-      )
+      // Write landed: drop any stale error for this row.
+      const { [id]: _cleared, ...rest } = toggleErrors
+      toggleErrors = rest
     } catch (error) {
       console.error('Error updating connection status:', error)
-      notifications.error(error instanceof Error ? error.message : 'Failed to update connection status')
+      const message = error instanceof Error ? error.message : 'Failed to update connection status'
+      setConnectionActive(id, previousActive)
+      toggleErrors = { ...toggleErrors, [id]: message }
+      notifications.error(
+        `${label}: ${message}`,
+        nextActive ? 'Could not enable connection' : 'Could not disable connection',
+      )
     } finally {
       togglingId = null
     }
@@ -420,30 +457,86 @@
   async function bulkSetActive(targetIds: string[], nextActive: boolean): Promise<void> {
     if (!targetIds.length || bulkToggling) return
     bulkToggling = true
+    bulkResult = null
+
+    // Snapshot the pre-write server state so only genuinely failed rows roll back.
+    const previous = new Map<string, boolean>()
+    for (const id of targetIds) {
+      const row = connections.find((c) => c.id === id)
+      if (row) previous.set(id, isActiveConn(row))
+    }
+
+    const succeededIds: string[] = []
+    const failedIds: string[] = []
+    const failures: Record<string, string> = {}
+
+    // Optimistically flip every targeted row; roll back per-row on rejection.
+    for (const id of targetIds) setConnectionActive(id, nextActive)
+
     try {
       const results = await Promise.allSettled(
-        targetIds.map((id) =>
-          api.updateConnection(id, { isActive: nextActive ? 1 : 0 }).then(() => {
-            connections = connections.map((c) =>
-              c.id === id ? { ...c, isActive: nextActive ? 1 : 0 } : c,
-            )
-          }),
-        ),
+        targetIds.map((id) => api.updateConnection(id, { isActive: nextActive ? 1 : 0 })),
       )
-      const failedCount = results.filter((result) => result.status === 'rejected').length
-      if (failedCount > 0) {
+      results.forEach((result, index) => {
+        const id = targetIds[index]
+        if (result.status === 'fulfilled') {
+          succeededIds.push(id)
+        } else {
+          failedIds.push(id)
+          failures[id] = result.reason instanceof Error ? result.reason.message : String(result.reason)
+          const previousActive = previous.get(id)
+          if (previousActive !== undefined) setConnectionActive(id, previousActive)
+        }
+      })
+
+      toggleErrors = { ...toggleErrors, ...failures }
+      bulkResult = {
+        action: nextActive ? 'enabled' : 'disabled',
+        total: targetIds.length,
+        succeeded: succeededIds.length,
+        failed: failedIds.map((id) => connectionLabelById(id)),
+      }
+
+      const verb = nextActive ? 'enabled' : 'disabled'
+      if (failedIds.length === 0) {
+        notifications.success(`All ${succeededIds.length} selected connections ${verb}.`)
+      } else if (succeededIds.length === 0) {
         notifications.error(
-          failedCount === targetIds.length
-            ? 'Could not update any selected connections.'
-            : `${failedCount} of ${targetIds.length} selected connections could not be updated.`,
+          `Could not ${nextActive ? 'enable' : 'disable'} any of ${targetIds.length} selected connections.`,
+          'Bulk update failed',
+        )
+      } else {
+        notifications.warning(
+          `${succeededIds.length} of ${targetIds.length} selected connections ${verb}; ${failedIds.length} failed.`,
+          'Partial bulk update',
         )
       }
     } catch (error) {
+      // Defensive: allSettled never rejects, but a throw here must not read as success.
       console.error('Error bulk toggling connections:', error)
-      notifications.error(error instanceof Error ? error.message : 'Failed to update selected connections')
+      const message = error instanceof Error ? error.message : 'Failed to update selected connections'
+      for (const id of targetIds) {
+        const previousActive = previous.get(id)
+        if (previousActive !== undefined) setConnectionActive(id, previousActive)
+        failures[id] = message
+      }
+      toggleErrors = { ...toggleErrors, ...failures }
+      bulkResult = {
+        action: nextActive ? 'enabled' : 'disabled',
+        total: targetIds.length,
+        succeeded: 0,
+        failed: targetIds.map((id) => connectionLabelById(id)),
+      }
+      notifications.error(message, 'Bulk update failed')
     } finally {
+      // Never trust local state after a partial write: reconcile with the server.
+      await fetchConnections(page)
       bulkToggling = false
     }
+  }
+
+  function dismissBulkResult(): void {
+    bulkResult = null
   }
 
   function handleDisableDepleted(): void {
@@ -873,6 +966,47 @@
     </div>
   </div>
 
+  <!-- Bulk toggle outcome: stays visible after the toast expires so a partial
+       failure can never be mistaken for a clean success. -->
+  {#if bulkResult}
+    {@const hasFailures = bulkResult.failed.length > 0}
+    <div
+      role={hasFailures ? 'alert' : 'status'}
+      class="flex items-start gap-2 rounded-xl border px-3 py-2 text-xs {hasFailures
+        ? 'border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-300'
+        : 'border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'}"
+    >
+      <span class="material-symbols-outlined shrink-0 text-[16px]">
+        {hasFailures ? 'warning' : 'check_circle'}
+      </span>
+      <div class="min-w-0 flex-1">
+        {#if !hasFailures}
+          <p>
+            All {bulkResult.total} selected
+            {bulkResult.total === 1 ? 'connection' : 'connections'} {bulkResult.action}.
+          </p>
+        {:else}
+          <p>
+            <strong>{bulkResult.succeeded}</strong> of <strong>{bulkResult.total}</strong> selected
+            connections {bulkResult.action}; <strong>{bulkResult.failed.length}</strong> failed.
+          </p>
+          <p class="mt-1 opacity-90">
+            Still active on server after refresh: {bulkResult.failed.join(', ')}
+          </p>
+        {/if}
+      </div>
+      <button
+        type="button"
+        onclick={dismissBulkResult}
+        class="shrink-0 text-current opacity-70 transition-opacity hover:opacity-100"
+        title="Dismiss"
+        aria-label="Dismiss bulk update result"
+      >
+        <span class="material-symbols-outlined text-[16px]">close</span>
+      </button>
+    </div>
+  {/if}
+
   <!-- Expiring-first notice -->
   {#if expiringFirst}
     <div
@@ -1100,6 +1234,12 @@
                 </div>
               </div>
             </div>
+            {#if toggleErrors[conn.id]}
+              <p class="mt-1 flex items-start gap-1 text-[11px] text-danger" role="alert">
+                <span class="material-symbols-outlined shrink-0 text-[14px]">error</span>
+                <span class="min-w-0">Update failed — {toggleErrors[conn.id]}</span>
+              </p>
+            {/if}
           </div>
 
           <!-- Card body: quota rows -->

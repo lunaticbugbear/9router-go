@@ -11,6 +11,7 @@
     kind: string
     connections: ProviderConnection[]
     isCustom?: boolean
+    busy?: boolean
     onToggle?: (providerId: string, newActive: boolean) => void
     onSelect?: () => void
   }
@@ -20,6 +21,7 @@
     kind,
     connections = [],
     isCustom = false,
+    busy = false,
     onToggle,
     onSelect,
   }: Props = $props()
@@ -58,6 +60,7 @@
   function handleToggleClick(e: MouseEvent | KeyboardEvent) {
     e.preventDefault()
     e.stopPropagation()
+    if (busy) return
     if (onToggle) onToggle(provider.id, allDisabled)
   }
 
@@ -136,6 +139,7 @@
           <Toggle
             size="sm"
             checked={!allDisabled}
+            disabled={busy}
             onChange={() => {}}
           />
         </div>

@@ -18,6 +18,16 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+// requireLiveE2E is the opt-in gate for tests that read the real user database
+// and/or send requests to real providers. Without NINEROUTER_LIVE_E2E=1 they
+// skip, so a plain `go test ./...` never touches live state or the network.
+func requireLiveE2E(t *testing.T) {
+	t.Helper()
+	if os.Getenv("NINEROUTER_LIVE_E2E") != "1" {
+		t.Skip("set NINEROUTER_LIVE_E2E=1 to run live E2E tests")
+	}
+}
+
 func getRealUserDB(t *testing.T) (*db.Repo, func()) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -74,6 +84,8 @@ func getRealUserDB(t *testing.T) (*db.Repo, func()) {
 }
 
 func TestLiveE2E_Antigravity_RealWeeklyQuota(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -109,6 +121,8 @@ func TestLiveE2E_Antigravity_RealWeeklyQuota(t *testing.T) {
 }
 
 func TestLiveE2E_DeepSeek_RealUpstream(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -150,6 +164,8 @@ func TestLiveE2E_DeepSeek_RealUpstream(t *testing.T) {
 }
 
 func TestLiveE2E_Antigravity_RealChat(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -188,6 +204,8 @@ func TestLiveE2E_Antigravity_RealChat(t *testing.T) {
 }
 
 func TestLiveE2E_Antigravity_RealStream(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -229,6 +247,8 @@ func TestLiveE2E_Antigravity_RealStream(t *testing.T) {
 }
 
 func TestLiveE2E_DeepSeek_RealStream(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -269,6 +289,8 @@ func TestLiveE2E_DeepSeek_RealStream(t *testing.T) {
 	}
 }
 func TestLiveE2E_Cline_SmartCombo(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -304,8 +326,9 @@ func TestLiveE2E_Cline_SmartCombo(t *testing.T) {
 	}
 }
 
-
 func TestLiveE2E_Antigravity_MultiToolCall(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -418,6 +441,8 @@ func TestLiveE2E_Antigravity_MultiToolCall(t *testing.T) {
 }
 
 func TestLiveE2E_DeepSeek_MultiToolCall(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -504,6 +529,8 @@ func TestLiveE2E_DeepSeek_MultiToolCall(t *testing.T) {
 }
 
 func TestLiveE2E_Gemini38_FlashHigh_MultiToolCall(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -616,6 +643,8 @@ func TestLiveE2E_Gemini38_FlashHigh_MultiToolCall(t *testing.T) {
 }
 
 func TestLiveE2E_Gemini38_FlashHigh_RealStream(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -657,6 +686,8 @@ func TestLiveE2E_Gemini38_FlashHigh_RealStream(t *testing.T) {
 }
 
 func TestLiveE2E_SpaceBunny_Free(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 
@@ -685,6 +716,8 @@ func TestLiveE2E_SpaceBunny_Free(t *testing.T) {
 }
 
 func TestLiveE2E_HandleTestModel_SpaceBunny(t *testing.T) {
+	requireLiveE2E(t)
+
 	repo, cleanup := getRealUserDB(t)
 	defer cleanup()
 

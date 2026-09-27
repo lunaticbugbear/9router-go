@@ -3,6 +3,7 @@ package chat
 import (
 	"bytes"
 	json "encoding/json/v2"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -184,6 +185,16 @@ func TestHandleTriggerUpdate_DisabledWithoutSource(t *testing.T) {
 }
 
 func TestHandleChangelog(t *testing.T) {
+	// The handler serves CHANGELOG.md from the working directory first. Run in a
+	// temp dir holding a fixture so the assertion is deterministic: the old test
+	// ran from the package dir, missed the relative paths, and passed only
+	// because the network answered the raw.githubusercontent.com fallback.
+	t.Chdir(t.TempDir())
+	const fixture = "# Changelog\n\n- fixture entry served from the local file\n"
+	if err := os.WriteFile("CHANGELOG.md", []byte(fixture), 0o600); err != nil {
+		t.Fatalf("write fixture CHANGELOG.md: %v", err)
+	}
+
 	handler := NewChatHandler(nil, nil)
 	req := httptest.NewRequest("GET", "/api/changelog", nil)
 	rec := httptest.NewRecorder()
@@ -191,9 +202,73 @@ func TestHandleChangelog(t *testing.T) {
 	handler.HandleChangelog(rec, req)
 
 	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
+		t.Fatalf("expected 200 from local CHANGELOG.md, got %d", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), "Changelog") {
 		t.Errorf("expected response to contain 'Changelog', got: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "fixture entry served from the local file") {
+		t.Errorf("expected the local fixture body to be served, got: %s", rec.Body.String())
+	}
+}
+
+// stubChangelogTransport answers changelog requests from a canned body and
+// records the URLs that were requested. It lets the remote fallback branch be
+// exercised without leaving the machine: HandleChangelog builds its own
+// *http.Client, so the network is stubbed at http.DefaultTransport.
+type stubChangelogTransport struct {
+	bodies map[string]string
+	urls   []string
+}
+
+func (s *stubChangelogTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	s.urls = append(s.urls, req.URL.String())
+	body, ok := s.bodies[req.URL.String()]
+	status := http.StatusNotFound
+	if ok {
+		status = http.StatusOK
+	}
+	return &http.Response{
+		StatusCode: status,
+		Body:       io.NopCloser(strings.NewReader(body)),
+		Header:     http.Header{"Content-Type": []string{"text/markdown; charset=utf-8"}},
+		Request:    req,
+	}, nil
+}
+
+func TestHandleChangelog_RemoteFallback(t *testing.T) {
+	// An empty working dir means no local CHANGELOG.md is reachable, so the
+	// handler must use its remote fallback (which the stub serves offline).
+	t.Chdir(t.TempDir())
+
+	const firstURL = "https://raw.githubusercontent.com/luqman-v1/9router-go/main/CHANGELOG.md"
+
+	stub := &stubChangelogTransport{bodies: map[string]string{
+		firstURL: "# Changelog\n\n- remote fallback entry\n",
+	}}
+	origTransport := http.DefaultTransport
+	http.DefaultTransport = stub
+	t.Cleanup(func() { http.DefaultTransport = origTransport })
+
+	handler := NewChatHandler(nil, nil)
+	req := httptest.NewRequest("GET", "/api/changelog", nil)
+	rec := httptest.NewRecorder()
+
+	handler.HandleChangelog(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from remote fallback, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "remote fallback entry") {
+		t.Errorf("expected the stubbed remote body to be served, got: %s", rec.Body.String())
+	}
+	if len(stub.urls) == 0 {
+		t.Fatal("expected the remote fallback to be requested")
+	}
+	if stub.urls[0] != firstURL {
+		t.Errorf("expected the first request to be %s, got %s", firstURL, stub.urls[0])
+	}
+	if len(stub.urls) > 1 {
+		t.Errorf("expected the first URL to satisfy the request, got requests: %v", stub.urls)
 	}
 }

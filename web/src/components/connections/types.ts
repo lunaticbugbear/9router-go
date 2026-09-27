@@ -1,5 +1,6 @@
 import { api, getAuthHeaders, type ProviderConnection } from '../../api/client'
 import { getModelCaps, getModelKind } from '../../lib/models'
+import { AVAILABLE_PROVIDER_ICONS, DEFAULT_PROVIDER_ICON, RESPONSES_PROVIDER_ICON } from '../../lib/providerIcons'
 import { PROVIDER_CATALOG, PROVIDER_CATALOG_MAP } from '../../lib/providers'
 
 export const MEDIA_KINDS: Record<string, true> = {
@@ -45,23 +46,32 @@ export interface CustomModelData {
   caps?: { vision?: boolean; reasoning?: boolean }
 }
 
+/**
+ * Resolve the dashboard icon URL for a provider id (or catalog alias).
+ *
+ * Only returns `/providers/<id>.png` when that PNG is actually shipped in
+ * `web/public/providers` — several catalog entries are header-name
+ * placeholders with no artwork, and requesting their PNG logs a 404.
+ * Unknown ids fall back to the OpenAI-compatible / Responses artwork.
+ */
 export function getIconPath(id?: string | null, apiType?: string): string {
-  if (!id) return '/providers/oai-cc.png'
+  const fallback = apiType === 'responses' ? RESPONSES_PROVIDER_ICON : DEFAULT_PROVIDER_ICON
+  if (!id) return fallback
   const clean = id.trim()
   if (clean.startsWith('openai-compatible')) {
-    return apiType === 'responses' ? '/providers/oai-r.png' : '/providers/oai-cc.png'
+    return apiType === 'responses' ? RESPONSES_PROVIDER_ICON : DEFAULT_PROVIDER_ICON
   }
   if (clean.startsWith('anthropic-compatible') || clean.includes('anthropic')) {
     return '/providers/anthropic-m.png'
   }
-  if (PROVIDER_CATALOG_MAP.has(clean)) {
+  if (PROVIDER_CATALOG_MAP.has(clean) && AVAILABLE_PROVIDER_ICONS.has(clean)) {
     return `/providers/${clean}.png`
   }
   const byAlias = PROVIDER_CATALOG.find((p) => p.alias === clean)
-  if (byAlias) {
+  if (byAlias && AVAILABLE_PROVIDER_ICONS.has(byAlias.id)) {
     return `/providers/${byAlias.id}.png`
   }
-  return apiType === 'responses' ? '/providers/oai-r.png' : '/providers/oai-cc.png'
+  return fallback
 }
 
 export function getProviderStats(

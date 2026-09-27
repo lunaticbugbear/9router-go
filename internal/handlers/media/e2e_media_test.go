@@ -6,12 +6,26 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"9router/proxy/internal/db"
 )
 
+// requireLiveE2E is the opt-in gate for tests that send requests to real
+// upstream services (Bing/Edge TTS, ElevenLabs, OpenCode). Without
+// NINEROUTER_LIVE_E2E=1 they skip, so a plain `go test ./...` never touches
+// the network.
+func requireLiveE2E(t *testing.T) {
+	t.Helper()
+	if os.Getenv("NINEROUTER_LIVE_E2E") != "1" {
+		t.Skip("set NINEROUTER_LIVE_E2E=1 to run live E2E tests")
+	}
+}
+
 func TestE2E_EdgeTTS_LiveEndpoint(t *testing.T) {
+	requireLiveE2E(t)
+
 	database, cleanup := setupMultimodalTestDB(t)
 	defer cleanup()
 
@@ -49,6 +63,8 @@ func TestE2E_EdgeTTS_LiveEndpoint(t *testing.T) {
 }
 
 func TestE2E_AudioVoices_EdgeTTS(t *testing.T) {
+	requireLiveE2E(t)
+
 	database, cleanup := setupMultimodalTestDB(t)
 	defer cleanup()
 

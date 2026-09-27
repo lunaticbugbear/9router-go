@@ -300,6 +300,8 @@ func TestHandleAudioVoices_unknownProvider(t *testing.T) {
 }
 
 func TestHandleAudioVoices_elevenlabs(t *testing.T) {
+	requireLiveE2E(t)
+
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)

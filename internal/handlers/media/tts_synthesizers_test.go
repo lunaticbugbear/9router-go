@@ -14,6 +14,10 @@ import (
 )
 
 func TestTTS_EdgeTTS_Success(t *testing.T) {
+	// The tfettts endpoint below is hardcoded to www.bing.com and is not wired to
+	// the mock server, so this test always issues a real network request.
+	requireLiveE2E(t)
+
 	// Mock Bing translator and speech endpoint
 	mockServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.URL.Path, "translator") {
@@ -131,6 +135,8 @@ func TestTTS_Nvidia_Transform(t *testing.T) {
 }
 
 func TestLiveTTS_Google(t *testing.T) {
+	requireLiveE2E(t)
+
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
@@ -146,6 +152,8 @@ func TestLiveTTS_Google(t *testing.T) {
 }
 
 func TestLiveTTS_Edge(t *testing.T) {
+	requireLiveE2E(t)
+
 	if testing.Short() {
 		t.Skip("skipping live test in short mode")
 	}
