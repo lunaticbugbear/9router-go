@@ -4,9 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
-	"strings"
 
 	"9router/proxy/internal/db"
 	"9router/proxy/internal/models"
@@ -504,5 +504,68 @@ func TestEndToEnd_RoundRobin_ComboAndProviderViaHTTP(t *testing.T) {
 
 	if hitsAcc1.Load() != 2 || hitsAcc2.Load() != 1 {
 		t.Errorf("expected 2 hits on Acc1 and 1 hit on Acc2, got Acc1=%d Acc2=%d", hitsAcc1.Load(), hitsAcc2.Load())
+	}
+}
+
+// TestConnectionRotation_SurvivesUpdatedAtReorder pins the bug behind the
+// TestEndToEnd_RoundRobin flake.
+//
+// GetProviderConnections orders its pool by `priority ASC, updatedAt DESC`, and
+// the success path calls UnlockConnectionModel on the connection it just used,
+// which rewrites that connection's updatedAt. Two connections seeded with the
+// same priority therefore swap places in the pool as soon as one of them has
+// served a request.
+//
+// Rotation must be a property of the connections, not of their positions in
+// that pool. This test drives the exact interleaving — select, then bump
+// updatedAt, then select again — and asserts the documented round-robin order.
+// Before the fix the third pick returned acc-2 instead of acc-1: the slot had
+// moved with the reordered pool, so one account was skipped and another served
+// twice.
+func TestConnectionRotation_SurvivesUpdatedAtReorder(t *testing.T) {
+	database, cleanup := setupChatTestDB(t)
+	defer cleanup()
+
+	if _, err := database.Exec(`DELETE FROM providerConnections WHERE id IN ('conn-1', 'conn-2')`); err != nil {
+		t.Fatalf("clear seeded connections: %v", err)
+	}
+	// Same priority, same updatedAt: the pool order is decided entirely by the
+	// ordering column this test then mutates.
+	if _, err := database.Exec(`INSERT INTO providerConnections
+		(id, provider, authType, name, priority, isActive, data, createdAt, updatedAt) VALUES
+		('acc-1', 'reorder', 'apikey', 'T', 1, 1, '{"apiKey":"k1","baseUrl":"http://127.0.0.1:1"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z'),
+		('acc-2', 'reorder', 'apikey', 'T', 1, 1, '{"apiKey":"k2","baseUrl":"http://127.0.0.1:1"}', '2026-07-18T00:00:00Z', '2026-07-18T00:00:00Z')`); err != nil {
+		t.Fatalf("seed connections: %v", err)
+	}
+
+	repo := db.NewRepo(database)
+	h := NewChatHandler(repo)
+	h.ResetConnectionState("")
+	if err := repo.SetProviderStrategy("reorder", db.ProviderStrategy{
+		RotateStrategy: "round-robin",
+		StickyLimit:    1,
+	}); err != nil {
+		t.Fatalf("set provider strategy: %v", err)
+	}
+
+	want := []string{"acc-1", "acc-2", "acc-1", "acc-2"}
+	for i, wantID := range want {
+		conn, _, err := h.GetBestConnection("reorder", "", nil, "m")
+		if err != nil {
+			t.Fatalf("pick %d: %v", i+1, err)
+		}
+		if conn.ID != wantID {
+			t.Fatalf("pick %d: got %s, want %s (rotation moved with the reordered pool)", i+1, conn.ID, wantID)
+		}
+
+		// Exactly what a successful forward does: clear the model lock, which
+		// rewrites updatedAt and reorders the pool for the next request.
+		if err := repo.UnlockConnectionModel(conn.ID, "m"); err != nil {
+			t.Fatalf("unlock %s: %v", conn.ID, err)
+		}
+		if _, err := database.Exec(`UPDATE providerConnections SET updatedAt = ? WHERE id = ?`,
+			[]string{"2026-01-01T00:00:01Z", "2026-01-01T00:00:02Z", "2026-01-01T00:00:03Z", "2026-01-01T00:00:04Z"}[i], conn.ID); err != nil {
+			t.Fatalf("bump updatedAt for %s: %v", conn.ID, err)
+		}
 	}
 }

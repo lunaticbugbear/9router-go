@@ -991,7 +991,7 @@
             connections {bulkResult.action}; <strong>{bulkResult.failed.length}</strong> failed.
           </p>
           <p class="mt-1 opacity-90">
-            Still active on server after refresh: {bulkResult.failed.join(', ')}
+            Not updated on server: {bulkResult.failed.join(', ')}
           </p>
         {/if}
       </div>

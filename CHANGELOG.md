@@ -3,6 +3,14 @@
 
 ## [Unreleased]
 
+### Connection rotation: the slot follows the connection, not its position
+
+- With two or more accounts at the same priority, round-robin rotation could skip one account and serve another twice. Rotation state was stored as an index into the candidate slice, and that slice is not stable across requests: `GetProviderConnections` orders the pool by `priority ASC, updatedAt DESC`, and a successful forward calls `UnlockConnectionModel`, which rewrites the serving connection's `updatedAt` and moves it within the pool. The stored index therefore stopped meaning "the connection that is serving" as soon as traffic reordered the pool, so the next request landed on the wrong account.
+- This was a real production bug, not a test artifact. It was found by `TestEndToEnd_RoundRobin`, which failed intermittently: it reproduced only when the two `updatedAt` writes landed in different wall-clock seconds, because `updatedAt` is RFC3339 with 1-second granularity. That is why ~58 earlier runs of the same test were clean.
+- Rotation is now keyed on connection identity. `comboStickyState` gained `ServingID`, and each request resolves it back to a slot through a new `connectionIndexByID` helper. If the pinned connection has left the pool (deleted, or deactivated out of the pool) the rotation restarts at the head of the current pool, which is where a fresh handler would start.
+- All four `GetProviderConnections` queries gained `id ASC` as a final tiebreaker, so connections that tie on `(priority, updatedAt)` — the common case right after a bulk import — come back in a deterministic order.
+- Added `TestConnectionRotation_SurvivesUpdatedAtReorder`, which drives the exact interleaving (select, bump `updatedAt` the way a successful forward does, select again) and asserts the round-robin order. On the old positional code it fails with `pick 3: got acc-2, want acc-1`.
+
 ### Test hygiene: no live provider calls from the default suite
 
 - The shared chat test fixture (`setupChatTestDB`) seeded provider connections without a `baseUrl`, so any test that did not delete those rows resolved the real provider catalog and forwarded to `api.deepseek.com`. Nine tests did exactly that — the persona/selector tests among them — and passed only because the live API answered. The fixture now points its seeded connections at a local stub upstream, keeping every test on localhost while preserving the fallback behavior those tests already relied on (first connection fails, the next is tried).
@@ -37,6 +45,7 @@
 
 - Quota bulk connection toggles use `Promise.allSettled` and report succeeded and failed counts in a persistent banner that stays on screen after the toast expires, so a partial failure cannot be mistaken for a clean success. Only the rows whose write failed roll back — a snapshot of the pre-write server state decides which — and the page reconciles with the server afterward rather than trusting local state.
 - Quota row-level toggle failures now show an inline error on the card and roll back that row alone.
+- The bulk banner's failed-row line said the opposite of what it meant: it read `Still active on server after refresh`, but the failed list is built only from `Promise.allSettled` rejections, so those rows are the ones whose write did **not** land and are still in their previous state after the reconcile. It now reads `Not updated on server: …`, which is what the row list actually contains.
 - Media provider toggles that write several connections report partial results (updated/failed with a reason per connection) and treat a total failure as a failure rather than success, then refresh actual connection state. A provider with an in-flight toggle is marked busy so a second click cannot race the first.
 
 ### Proxy pool schema bootstrap

@@ -112,7 +112,10 @@ Recent frontend fixes in this handover:
   writes and row switches have descriptive labels. Provider-list fetch errors
   propagate from the API client and show a retry instead of an empty state.
   Browser injection confirmed a 500 remains visible and Retry sends a second
-  request; auto-ping failure also rolled back after a real PATCH.
+  request; auto-ping failure also rolled back after a real PATCH. The bulk
+  banner's failed-row line read `Still active on server after refresh` for rows
+  whose write had actually failed; it now reads `Not updated on server: …`,
+  matching the list, which is built only from `Promise.allSettled` rejections.
 - `TerminalView.svelte`: the interrupted OMP run added stream status/error and
   retry, clear failure feedback, log-level GET errors, and scroll pinning with a
   "Jump to latest" action. Embedded gateway smoke verified Live over SSE, clear
@@ -167,6 +170,23 @@ Latest validation:
 - `npx tsc -b` and `npx vite build` passed after the Login recovery and dynamic
   origin/port updates. Focused Go auth tests passed for remote default-password
   rejection and password-source status.
+- The intermittent `TestEndToEnd_RoundRobin` failure was traced to a real
+  rotation bug, not a flaky test. Provider-connection rotation kept its slot as
+  an index into the candidate slice, but that slice comes from
+  `GetProviderConnections` ordered by `priority ASC, updatedAt DESC`, and a
+  successful forward rewrites the serving connection's `updatedAt` via
+  `UnlockConnectionModel`, reordering the pool. The slot therefore moved with
+  the pool: with two accounts at the same priority, one was skipped and another
+  served twice. It only reproduced when the two `updatedAt` writes landed in
+  different wall-clock seconds, since the value is RFC3339 with 1-second
+  granularity, which is why ~58 earlier runs were clean. Rotation is now keyed
+  on connection identity (`comboStickyState.ServingID` resolved through
+  `connectionIndexByID`), a pinned connection that has left the pool restarts
+  the rotation at the pool head, and all four `GetProviderConnections` queries
+  end with `id ASC` so ties on `(priority, updatedAt)` are deterministic.
+  `TestConnectionRotation_SurvivesUpdatedAtReorder` reproduces the exact
+  interleaving and fails on the old positional code. Treat further
+  round-robin flakes as suspect until this is ruled out.
 - Vite still reports accessibility warnings in untouched Media/Proxy Pool and
   custom-model components, plus the existing large-chunk warning.
 - Browser tests must not save a dummy combo or alter the configured provider.

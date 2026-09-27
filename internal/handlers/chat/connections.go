@@ -446,14 +446,36 @@ func (h *ChatHandler) rotateConnectionsSticky(provider string, conns []*models.P
 	key := "conn:" + provider
 	state, exists := h.stickyState[key]
 	if !exists {
-		state = &comboStickyState{Index: 0, ConsecutiveUseCount: 0}
+		state = &comboStickyState{}
 		h.stickyState[key] = state
 	}
 
-	servingIndex := state.Index % len(conns)
+	// Resolve the serving slot by connection identity, not by slice position.
+	//
+	// The candidate slice is not stable between requests: it comes from
+	// GetProviderConnections, which orders by `priority ASC, updatedAt DESC`,
+	// and a successful forward bumps the serving connection's updatedAt
+	// (UnlockConnectionModel, called from the success path). A positional
+	// pointer therefore stops meaning "the connection that is serving" as soon
+	// as traffic reorders the pool, and the next request lands on the wrong
+	// account — skipping one and repeating another.
+	//
+	// Holding the identity makes rotation a property of the connections
+	// themselves, so a reorder cannot move the slot. If the pinned connection
+	// is gone (deleted, or deactivated out of the pool) the rotation restarts
+	// at the head of the current pool, which is the same place a fresh
+	// handler would start.
+	servingIndex := 0
+	if state.ServingID != "" {
+		if p := connectionIndexByID(conns, state.ServingID); p >= 0 {
+			servingIndex = p
+		}
+	}
+	state.ServingID = conns[servingIndex].ID
+
 	state.ConsecutiveUseCount++
 	if state.ConsecutiveUseCount >= stickyLimit {
-		state.Index = (servingIndex + 1) % len(conns)
+		state.ServingID = conns[(servingIndex+1)%len(conns)].ID
 		state.ConsecutiveUseCount = 0
 	}
 	state.ServingIndex = servingIndex
@@ -463,6 +485,17 @@ func (h *ChatHandler) rotateConnectionsSticky(provider string, conns []*models.P
 		rotated[i] = conns[(servingIndex+i)%len(conns)]
 	}
 	return rotated
+}
+
+// connectionIndexByID returns the position of the connection with the given id,
+// or -1 when it is not part of the current candidate pool.
+func connectionIndexByID(conns []*models.ProviderConnection, id string) int {
+	for i, c := range conns {
+		if c != nil && c.ID == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // ResetConnectionState clears rotation state for a provider (or all providers if provider="").

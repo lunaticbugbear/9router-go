@@ -161,12 +161,12 @@ func (r *Repo) GetProviderConnections(provider string, activeOnly bool) ([]*mode
 			query = `SELECT id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt
 				FROM providerConnections
 				WHERE provider = ? AND isActive = 1
-				ORDER BY CASE WHEN priority IS NULL THEN 999999 ELSE priority END ASC, updatedAt DESC`
+				ORDER BY CASE WHEN priority IS NULL THEN 999999 ELSE priority END ASC, updatedAt DESC, id ASC`
 		} else {
 			query = `SELECT id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt
 				FROM providerConnections
 				WHERE provider = ?
-				ORDER BY CASE WHEN priority IS NULL THEN 999999 ELSE priority END ASC, updatedAt DESC`
+				ORDER BY CASE WHEN priority IS NULL THEN 999999 ELSE priority END ASC, updatedAt DESC, id ASC`
 		}
 		args = append(args, provider)
 	} else {
@@ -174,11 +174,11 @@ func (r *Repo) GetProviderConnections(provider string, activeOnly bool) ([]*mode
 			query = `SELECT id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt
 				FROM providerConnections
 				WHERE isActive = 1
-				ORDER BY CASE WHEN priority IS NULL THEN 999999 ELSE priority END ASC, updatedAt DESC`
+				ORDER BY CASE WHEN priority IS NULL THEN 999999 ELSE priority END ASC, updatedAt DESC, id ASC`
 		} else {
 			query = `SELECT id, provider, authType, name, email, priority, isActive, data, createdAt, updatedAt
 				FROM providerConnections
-				ORDER BY CASE WHEN priority IS NULL THEN 999999 ELSE priority END ASC, updatedAt DESC`
+				ORDER BY CASE WHEN priority IS NULL THEN 999999 ELSE priority END ASC, updatedAt DESC, id ASC`
 		}
 	}
 
