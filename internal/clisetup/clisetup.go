@@ -5,6 +5,12 @@
 // Every write keeps unrelated settings, backs up the pre-9router file once as
 // "<file>.9router.bak", and refuses to touch a file it cannot parse rather
 // than replacing the operator's config.
+//
+// Reset restores the 9router-managed keys from that backup instead of blindly
+// deleting them, so a value the operator already had (their own gateway URL,
+// token or model) comes back rather than disappearing. A managed key that was
+// absent before the install is removed, and every other key — including edits
+// made after the install — is left alone.
 package clisetup
 
 import (
@@ -141,10 +147,15 @@ func readJSON(path string, v any) (exists bool, err error) {
 	if len(bytes.TrimSpace(b)) == 0 {
 		return true, nil
 	}
-	if err := json.Unmarshal(trailingComma.ReplaceAll(b, []byte("$1")), v); err != nil {
+	if err := decodeJSON(b, v); err != nil {
 		return true, fmt.Errorf("%s is not valid JSON, left unchanged: %w", path, err)
 	}
 	return true, nil
+}
+
+// decodeJSON decodes JSONC (JSON with trailing commas) into v.
+func decodeJSON(b []byte, v any) error {
+	return json.Unmarshal(trailingComma.ReplaceAll(b, []byte("$1")), v)
 }
 
 func writeJSON(path string, v any) (string, error) {
@@ -155,17 +166,41 @@ func writeJSON(path string, v any) (string, error) {
 	return writeFile(path, append(b, '\n'))
 }
 
+// writeJSONReset writes the file back without touching the install backup: a
+// reset must leave "<file>.9router.bak" as the pre-9router original, never
+// replace it with the post-install state.
+func writeJSONReset(path string, v any) error {
+	b, err := json.Marshal(v, jsontext.WithIndent("  "), json.Deterministic(true))
+	if err != nil {
+		return err
+	}
+	return writeReset(path, append(b, '\n'))
+}
+
 // writeFile writes atomically, backing up the original once. New files are
 // 0600 because they carry the gateway key; existing files keep their mode.
 func writeFile(path string, data []byte) (backup string, err error) {
+	return writeAtomic(path, data, true)
+}
+
+// writeReset writes atomically without creating or refreshing the backup.
+func writeReset(path string, data []byte) error {
+	_, err := writeAtomic(path, data, false)
+	return err
+}
+
+func writeAtomic(path string, data []byte, keepBackup bool) (backup string, err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", err
 	}
 	mode := fs.FileMode(0o600)
 	if fi, err := os.Stat(path); err == nil {
 		mode = fi.Mode().Perm()
-		bak := path + ".9router.bak"
-		if _, err := os.Stat(bak); errors.Is(err, fs.ErrNotExist) {
+		bak := backupPath(path)
+		if keepBackup {
+			backup = bak
+		}
+		if _, err := os.Stat(bak); errors.Is(err, fs.ErrNotExist) && keepBackup {
 			orig, err := os.ReadFile(path)
 			if err != nil {
 				return "", err
@@ -174,7 +209,6 @@ func writeFile(path string, data []byte) (backup string, err error) {
 				return "", err
 			}
 		}
-		backup = bak
 	}
 	tmp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp-*")
 	if err != nil {

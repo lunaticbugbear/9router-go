@@ -134,8 +134,11 @@ func TestClineInstaller(t *testing.T) {
 		mustContain(t, "cline secrets", readTestFile(t, secrets), `"openAiApiKey": "sk-test"`, `"apiKey": "keep"`)
 	}, func() {
 		got := readTestFile(t, state)
-		mustContain(t, "cline reset", got, `"actModeApiProvider": "cline"`, `"telemetry": "off"`)
-		mustNotContain(t, "cline reset", got, "openAiBaseUrl")
+		// The fixture's prior value was "anthropic"; reset must restore it, not
+		// hardcode "cline". planModeApiProvider was absent before the install,
+		// so that one is removed.
+		mustContain(t, "cline reset", got, `"actModeApiProvider": "anthropic"`, `"telemetry": "off"`)
+		mustNotContain(t, "cline reset", got, "openAiBaseUrl", "planModeApiProvider")
 		mustNotContain(t, "cline secrets reset", readTestFile(t, secrets), "openAiApiKey")
 	})
 }

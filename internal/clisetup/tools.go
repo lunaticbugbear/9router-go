@@ -49,6 +49,12 @@ func applyClaude(home string, o Options) (Result, error) {
 	return Result{Message: "Claude Code now routes through 9router. Start a new claude session.", ConfigPath: path, BackupPath: bak}, err
 }
 
+// claudeManagedKeys are the settings applyClaude writes over: the operator's
+// own values live in the backup, so reset restores them.
+var claudeManagedKeys = []string{
+	"hasCompletedOnboarding",
+}
+
 func resetClaude(home string) (Result, error) {
 	path := claudePath(home)
 	s := map[string]any{}
@@ -56,16 +62,16 @@ func resetClaude(home string) (Result, error) {
 	if err != nil || !exists {
 		return Result{Message: "No Claude Code settings to reset", ConfigPath: path}, err
 	}
+	plan := planJSON(path)
+	restoreKeys(s, plan.region(), claudeManagedKeys...)
 	if env, ok := s["env"].(map[string]any); ok {
-		for _, k := range claudeResetKeys {
-			delete(env, k)
-		}
-		if len(env) == 0 {
-			delete(s, "env")
-		}
+		restoreKeys(env, plan.region("env"), claudeResetKeys...)
+		pruneRestored(s, "env", plan.had("env"))
 	}
-	_, err = writeJSON(path, s)
-	return Result{Message: "9router settings removed from Claude Code", ConfigPath: path}, err
+	if err := writeJSONReset(path, s); err != nil {
+		return Result{}, err
+	}
+	return Result{Message: resetMessage("Claude Code reset.", path, plan.mode()), ConfigPath: path}, nil
 }
 
 func claudeConfigured(home string) (bool, string) {
@@ -76,7 +82,9 @@ func claudeConfigured(home string) (bool, string) {
 	}
 	env, _ := s["env"].(map[string]any)
 	v, _ := env["ANTHROPIC_BASE_URL"].(string)
-	return v != "", path
+	// A restored operator value (their own gateway) must not read as "Using
+	// 9router", so the URL has to look like this gateway.
+	return v != "" && (isLocalGatewayURL(v) || strings.Contains(v, "9router")), path
 }
 
 // ---------------------------------------------------------------- Codex CLI
@@ -112,6 +120,15 @@ func writeTOML(path string, cfg map[string]any) (string, error) {
 	return writeFile(path, b)
 }
 
+// writeTOMLReset writes the config back without touching the install backup.
+func writeTOMLReset(path string, cfg map[string]any) error {
+	b, err := toml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return writeReset(path, b)
+}
+
 func applyCodex(home string, o Options) (Result, error) {
 	path := codexPath(home)
 	cfg, _, err := readTOML(path)
@@ -140,25 +157,26 @@ func resetCodex(home string) (Result, error) {
 	if err != nil || !exists {
 		return Result{Message: "No Codex config to reset", ConfigPath: path}, err
 	}
+	plan := planTOML(path)
+	// Only step aside when the file still points at this gateway; otherwise the
+	// operator's own model_provider choice is none of our business.
 	if cfg["model_provider"] == "9router" {
-		delete(cfg, "model")
-		delete(cfg, "model_provider")
+		restoreKeys(cfg, plan.region(), "model", "model_provider")
 	}
 	if p, ok := cfg["model_providers"].(map[string]any); ok {
-		delete(p, "9router")
-		if len(p) == 0 {
-			delete(cfg, "model_providers")
-		}
+		prev := plan.region("model_providers")
+		restoreKeys(p, prev, "9router")
+		pruneRestored(cfg, "model_providers", prev != nil)
 	}
 	if a, ok := cfg["agents"].(map[string]any); ok {
-		delete(a, "default_subagent_model")
-		delete(a, "subagent")
-		if len(a) == 0 {
-			delete(cfg, "agents")
-		}
+		prev := plan.region("agents")
+		restoreKeys(a, prev, "default_subagent_model", "subagent")
+		pruneRestored(cfg, "agents", prev != nil)
 	}
-	_, err = writeTOML(path, cfg)
-	return Result{Message: "9router settings removed from Codex", ConfigPath: path}, err
+	if err := writeTOMLReset(path, cfg); err != nil {
+		return Result{}, err
+	}
+	return Result{Message: resetMessage("Codex reset.", path, plan.mode()), ConfigPath: path}, nil
 }
 
 func codexConfigured(home string) (bool, string) {
@@ -213,27 +231,30 @@ func resetOpenCode(home string) (Result, error) {
 	if err != nil || !exists {
 		return Result{Message: "No OpenCode config to reset", ConfigPath: path}, err
 	}
+	plan := planJSON(path)
 	if p, ok := cfg["provider"].(map[string]any); ok {
-		delete(p, "9router")
-		if len(p) == 0 {
-			delete(cfg, "provider")
-		}
+		prev := plan.region("provider")
+		restoreKeys(p, prev, "9router")
+		pruneRestored(cfg, "provider", prev != nil)
 	}
+	// applyOpenCode prefixes the active model and the explorer subagent with
+	// "9router/"; anything else is the operator's own choice.
 	if m, _ := cfg["model"].(string); strings.HasPrefix(m, "9router/") {
-		delete(cfg, "model")
+		restoreKeys(cfg, plan.region(), "model")
 	}
 	if a, ok := cfg["agent"].(map[string]any); ok {
+		prev := plan.region("agent")
 		if e, _ := a["explorer"].(map[string]any); e != nil {
 			if m, _ := e["model"].(string); strings.HasPrefix(m, "9router/") {
-				delete(a, "explorer")
+				restoreKeys(a, prev, "explorer")
 			}
 		}
-		if len(a) == 0 {
-			delete(cfg, "agent")
-		}
+		pruneRestored(cfg, "agent", prev != nil)
 	}
-	_, err = writeJSON(path, cfg)
-	return Result{Message: "9router settings removed from OpenCode", ConfigPath: path}, err
+	if err := writeJSONReset(path, cfg); err != nil {
+		return Result{}, err
+	}
+	return Result{Message: resetMessage("OpenCode reset.", path, plan.mode()), ConfigPath: path}, nil
 }
 
 func openCodeConfigured(home string) (bool, string) {
@@ -294,15 +315,44 @@ func upsertEnvLine(text, key, value string) string {
 	return text + line + "\n"
 }
 
+// hermesModelIsOurs reports whether a model block is the one 9router wrote.
+func hermesModelIsOurs(body string) bool {
+	return strings.Contains(body, `provider: "custom"`) && isLocalGatewayURL(body)
+}
+
 func resetHermes(home string) (Result, error) {
 	cfgPath := filepath.Join(hermesDir(home), "config.yaml")
 	yaml, err := readFile(cfgPath)
 	if err != nil || yaml == nil {
 		return Result{Message: "No Hermes config to reset", ConfigPath: cfgPath}, err
 	}
-	text := strings.TrimLeft(hermesModelBlock.ReplaceAllString(string(yaml), ""), "\n")
-	_, err = writeFile(cfgPath, []byte(text))
-	return Result{Message: "9router model block removed from Hermes", ConfigPath: cfgPath}, err
+	text := string(yaml)
+	plan := planText(cfgPath)
+	// applyHermes replaced the operator's own "model:" block, so that block is
+	// what reset has to put back; the block itself is the managed unit here.
+	if m := hermesModelBlock.FindSubmatch(yaml); m != nil && hermesModelIsOurs(string(m[1])) {
+		if block := hermesModelBlock.FindString(plan.text); plan.ok() && block != "" {
+			text = hermesModelBlock.ReplaceAllLiteralString(text, block)
+		} else {
+			text = strings.TrimLeft(hermesModelBlock.ReplaceAllString(text, ""), "\n")
+		}
+	}
+	if err := writeReset(cfgPath, []byte(text)); err != nil {
+		return Result{}, err
+	}
+
+	envPath := filepath.Join(hermesDir(home), ".env")
+	if envText, err := readFile(envPath); err == nil && envText != nil {
+		prevEnv, hadEnvBackup := readBackupText(envPath)
+		value, had := "", false
+		if hadEnvBackup {
+			value, had = envLine(prevEnv, "OPENAI_API_KEY")
+		}
+		if err := writeReset(envPath, []byte(restoreEnvLine(string(envText), "OPENAI_API_KEY", value, had))); err != nil {
+			return Result{}, err
+		}
+	}
+	return Result{Message: resetMessage("Hermes reset.", cfgPath, plan.mode()), ConfigPath: cfgPath}, nil
 }
 
 func hermesConfigured(home string) (bool, string) {
@@ -315,8 +365,7 @@ func hermesConfigured(home string) (bool, string) {
 	if m == nil {
 		return false, cfgPath
 	}
-	body := string(m[1])
-	return strings.Contains(body, `provider: "custom"`) && isLocalGatewayURL(body), cfgPath
+	return hermesModelIsOurs(string(m[1])), cfgPath
 }
 
 // ---------------------------------------------------------------- GitHub Copilot (VS Code)
@@ -342,13 +391,18 @@ func readCopilot(path string) ([]any, bool, error) {
 	return entries, exists, err
 }
 
+// copilotIsOurs identifies the 9Router entry 9router adds to the model list.
+func copilotIsOurs(e any) bool {
+	m, _ := e.(map[string]any)
+	return m != nil && m["name"] == "9Router"
+}
+
 func withoutCopilot9Router(entries []any) []any {
 	out := entries[:0:0]
 	for _, e := range entries {
-		if m, _ := e.(map[string]any); m != nil && m["name"] == "9Router" {
-			continue
+		if !copilotIsOurs(e) {
+			out = append(out, e)
 		}
-		out = append(out, e)
 	}
 	return out
 }
@@ -380,8 +434,14 @@ func resetCopilot(home string) (Result, error) {
 	if err != nil || !exists {
 		return Result{Message: "No Copilot model config to reset", ConfigPath: path}, err
 	}
-	_, err = writeJSON(path, withoutCopilot9Router(entries))
-	return Result{Message: "9Router removed from Copilot models", ConfigPath: path}, err
+	// The managed unit is the entry named "9Router", which is 9router's own
+	// namespace: applyCopilot drops the operator's entry of that name and
+	// re-adds its own, so removing it is already the exact inverse. Every other
+	// entry is untouched.
+	if err := writeJSONReset(path, withoutCopilot9Router(entries)); err != nil {
+		return Result{}, err
+	}
+	return Result{Message: resetMessage("Copilot model list reset.", path, modeNamespaceOnly), ConfigPath: path}, nil
 }
 
 func copilotConfigured(home string) (bool, string) {
@@ -501,11 +561,12 @@ func resetCowork(home string) (Result, error) {
 	if err != nil || !exists {
 		return Result{Message: "No active Cowork config to reset", ConfigPath: path}, err
 	}
-	for _, k := range coworkKeys {
-		delete(cfg, k)
+	plan := planJSON(path)
+	restoreKeys(cfg, plan.region(), coworkKeys...)
+	if err := writeJSONReset(path, cfg); err != nil {
+		return Result{}, err
 	}
-	_, err = writeJSON(path, cfg)
-	return Result{Message: "9router gateway removed from Cowork. Quit & reopen Claude Desktop.", ConfigPath: path}, err
+	return Result{Message: resetMessage("Cowork gateway reset. Quit & reopen Claude Desktop.", path, plan.mode()), ConfigPath: path}, nil
 }
 
 func coworkConfigured(home string) (bool, string) {

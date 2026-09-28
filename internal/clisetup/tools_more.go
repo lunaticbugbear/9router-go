@@ -77,12 +77,19 @@ func resetDroid(home string) (Result, error) {
 	if err != nil || !exists {
 		return Result{Message: "No Factory Droid settings to reset", ConfigPath: path}, err
 	}
+	// applyDroid only replaces entries whose id is its own "custom:9Router*"
+	// namespace and leaves every other entry in place, so removing those
+	// entries is already the exact inverse: no operator value is involved.
+	// Restoring the backup's copies instead would resurrect a previous
+	// install's stale entries.
 	if list, ok := s["customModels"].([]any); ok {
 		s["customModels"] = withoutDroid9Router(list)
 		pruneEmpty(s, "customModels")
 	}
-	_, err = writeJSON(path, s)
-	return Result{Message: "9router models removed from Factory Droid", ConfigPath: path}, err
+	if err := writeJSONReset(path, s); err != nil {
+		return Result{}, err
+	}
+	return Result{Message: resetMessage("Factory Droid reset.", path, modeNamespaceOnly), ConfigPath: path}, nil
 }
 
 func droidConfigured(home string) (bool, string) {
@@ -98,6 +105,9 @@ func droidConfigured(home string) (bool, string) {
 // ---------------------------------------------------------------- Open Claw
 
 func openClawPath(home string) string { return filepath.Join(home, ".openclaw", "openclaw.json") }
+
+// is9RouterModelKey reports whether an allow-list key belongs to 9router.
+func is9RouterModelKey(k string) bool { return strings.HasPrefix(k, "9router/") }
 
 func agentModelID(v any) string {
 	switch m := v.(type) {
@@ -164,6 +174,26 @@ func applyOpenClaw(home string, o Options) (Result, error) {
 	return Result{Message: "Open Claw default model now routes through 9router.", ConfigPath: path, BackupPath: bak}, err
 }
 
+// openClawModelIsOurs reports whether a model id belongs to 9router's slot.
+func openClawModelIsOurs(m any) bool {
+	return strings.HasPrefix(agentModelID(m), "9router/")
+}
+
+func openClawAgentsByID(list any) map[string]map[string]any {
+	byID := map[string]map[string]any{}
+	items, _ := list.([]any)
+	for _, a := range items {
+		m, _ := a.(map[string]any)
+		if m == nil {
+			continue
+		}
+		if id, _ := m["id"].(string); id != "" {
+			byID[id] = m
+		}
+	}
+	return byID
+}
+
 func resetOpenClaw(home string) (Result, error) {
 	path := openClawPath(home)
 	s := map[string]any{}
@@ -171,6 +201,7 @@ func resetOpenClaw(home string) (Result, error) {
 	if err != nil || !exists {
 		return Result{Message: "No Open Claw settings to reset", ConfigPath: path}, err
 	}
+	plan := planJSON(path)
 	if m, ok := s["models"].(map[string]any); ok {
 		if p, ok := m["providers"].(map[string]any); ok {
 			delete(p, "9router")
@@ -181,21 +212,87 @@ func resetOpenClaw(home string) (Result, error) {
 		if d, ok := agents["defaults"].(map[string]any); ok {
 			if allow, ok := d["models"].(map[string]any); ok {
 				for k := range allow {
-					if strings.HasPrefix(k, "9router/") {
+					if is9RouterModelKey(k) {
 						delete(allow, k)
 					}
 				}
 				pruneEmpty(d, "models")
 			}
 			if mdl, ok := d["model"].(map[string]any); ok {
-				if p, _ := mdl["primary"].(string); strings.HasPrefix(p, "9router/") {
-					delete(mdl, "primary")
+				// applyOpenClaw overwrites "primary" unconditionally, so the
+				// backup is the only record of the operator's own choice.
+				restoreValue(mdl, plan.region("agents", "defaults", "model"), "primary", is9RouterModelID)
+				pruneEmpty(d, "model")
+			}
+		}
+		// applyOpenClaw deletes an agent's own "model" when it points at
+		// 9router, so the backup is the only place that value still exists.
+		if list, ok := agents["list"].([]any); ok {
+			prevByID := agentsByID(plan.region("agents")["list"])
+			for _, a := range list {
+				agent, _ := a.(map[string]any)
+				if agent == nil {
+					continue
 				}
+				id, _ := agent["id"].(string)
+				restoreValue(agent, prevByID[id], "model", openClawModelIsOurs)
 			}
 		}
 	}
-	_, err = writeJSON(path, s)
-	return Result{Message: "9router removed from Open Claw", ConfigPath: path}, err
+	if err := writeJSONReset(path, s); err != nil {
+		return Result{}, err
+	}
+	// The per-agent models.json carries a 9router provider of its own, which
+	// applyOpenClaw writes and reset must clear or the agent stays pointed at
+	// the gateway.
+	for _, a := range agentEntries(s) {
+		dir, _ := a["agentDir"].(string)
+		if dir == "" || !filepath.IsAbs(dir) || !strings.HasPrefix(filepath.Clean(dir), home+string(os.PathSeparator)) {
+			continue
+		}
+		mp := filepath.Join(dir, "models.json")
+		am := map[string]any{}
+		ok, err := readJSON(mp, &am)
+		if err != nil || !ok {
+			continue
+		}
+		p, ok := am["providers"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if _, had := p["9router"]; !had {
+			continue
+		}
+		delete(p, "9router")
+		pruneEmpty(am, "providers")
+		if err := writeJSONReset(mp, am); err != nil {
+			return Result{}, err
+		}
+	}
+	return Result{Message: resetMessage("Open Claw reset.", path, plan.mode()), ConfigPath: path}, nil
+}
+
+// agentsByID indexes an "agents.list" array by each entry's id.
+func agentsByID(list any) map[string]map[string]any {
+	byID := map[string]map[string]any{}
+	for _, a := range agentEntries(map[string]any{"agents": map[string]any{"list": list}}) {
+		if id, _ := a["id"].(string); id != "" {
+			byID[id] = a
+		}
+	}
+	return byID
+}
+
+func agentEntries(s map[string]any) []map[string]any {
+	agents, _ := s["agents"].(map[string]any)
+	list, _ := agents["list"].([]any)
+	out := make([]map[string]any, 0, len(list))
+	for _, a := range list {
+		if m, _ := a.(map[string]any); m != nil {
+			out = append(out, m)
+		}
+	}
+	return out
 }
 
 func openClawConfigured(home string) (bool, string) {
@@ -237,13 +334,22 @@ func resetKilo(home string) (Result, error) {
 	if err != nil || !exists {
 		return Result{Message: "No Kilo Code auth to reset", ConfigPath: path}, err
 	}
-	// Only drop the entry when it points at this gateway, not the user's own endpoint.
-	if kiloEntryIsOurs(auth) {
-		delete(auth, "openai-compatible")
+	plan := planJSON(path)
+	// applyKilo overwrites the openai-compatible entry unconditionally, so the
+	// backup holds the operator's own endpoint when they had one. An entry that
+	// points somewhere else is the operator's, not ours, and is left alone.
+	if _, had := auth["openai-compatible"]; had && kiloEntryIsOurs(auth) {
+		restoreKeys(auth, plan.region(), "openai-compatible")
 	}
-	delete(auth, "9router")
-	_, err = writeJSON(path, auth)
-	return Result{Message: "9router removed from Kilo Code", ConfigPath: path}, err
+	// Older versions stored the gateway under a "9router" key; drop only the
+	// copy this installer could have written.
+	if v, had := auth["9router"].(map[string]any); had && kiloEntryIsOurs(map[string]any{"openai-compatible": v}) {
+		restoreKeys(auth, plan.region(), "9router")
+	}
+	if err := writeJSONReset(path, auth); err != nil {
+		return Result{}, err
+	}
+	return Result{Message: resetMessage("Kilo Code reset.", path, plan.mode()), ConfigPath: path}, nil
 }
 
 func kiloConfigured(home string) (bool, string) {
@@ -292,6 +398,12 @@ func applyCline(home string, o Options) (Result, error) {
 	return Result{Message: "Cline (act and plan mode) now uses 9router.", ConfigPath: statePath, BackupPath: bak}, nil
 }
 
+// clineKeys are the globalState keys applyCline writes.
+var clineKeys = []string{
+	"actModeApiProvider", "planModeApiProvider", "openAiBaseUrl",
+	"openAiModelId", "planModeOpenAiModelId",
+}
+
 func resetCline(home string) (Result, error) {
 	statePath := filepath.Join(clineDir(home), "globalState.json")
 	secretsPath := filepath.Join(clineDir(home), "secrets.json")
@@ -303,22 +415,29 @@ func resetCline(home string) (Result, error) {
 	if !clineIsOurs(gs) {
 		return Result{Message: "Cline is not using 9router; nothing changed", ConfigPath: statePath}, nil
 	}
-	for _, k := range []string{"openAiBaseUrl", "openAiModelId", "planModeOpenAiModelId"} {
-		delete(gs, k)
+	plan := planJSON(statePath)
+	if plan.ok() {
+		restoreKeys(gs, plan.region(), clineKeys...)
+	} else {
+		// No backup: we cannot know the prior providers, so fall back to the
+		// previous behaviour — clear the gateway keys and hand both modes back
+		// to Cline's own provider — rather than leaving the modes unset.
+		restoreKeys(gs, nil, "openAiBaseUrl", "openAiModelId", "planModeOpenAiModelId")
+		gs["actModeApiProvider"] = "cline"
+		gs["planModeApiProvider"] = "cline"
 	}
-	gs["actModeApiProvider"] = "cline"
-	gs["planModeApiProvider"] = "cline"
-	if _, err := writeJSON(statePath, gs); err != nil {
+	if err := writeJSONReset(statePath, gs); err != nil {
 		return Result{}, err
 	}
 	secrets := map[string]any{}
 	if exists, err := readJSON(secretsPath, &secrets); err == nil && exists {
-		delete(secrets, "openAiApiKey")
-		if _, err := writeJSON(secretsPath, secrets); err != nil {
+		// openAiApiKey is a user setting we overwrote, so restore it too.
+		restoreKeys(secrets, planJSON(secretsPath).region(), "openAiApiKey")
+		if err := writeJSONReset(secretsPath, secrets); err != nil {
 			return Result{}, err
 		}
 	}
-	return Result{Message: "9router removed from Cline", ConfigPath: statePath}, nil
+	return Result{Message: resetMessage("Cline reset.", statePath, plan.mode()), ConfigPath: statePath}, nil
 }
 
 func clineConfigured(home string) (bool, string) {
@@ -362,12 +481,26 @@ func resetDeepSeek(home string) (Result, error) {
 	if !deepSeekIsOurs(cfg) {
 		return Result{Message: "DeepSeek TUI is not using 9router; nothing changed", ConfigPath: path}, nil
 	}
-	cfg["provider"] = "deepseek"
-	p := cfg["providers"].(map[string]any)
-	delete(p, "openai")
-	pruneEmpty(cfg, "providers")
-	_, err = writeTOML(path, cfg)
-	return Result{Message: "DeepSeek TUI switched back to its DeepSeek provider", ConfigPath: path}, err
+	plan := planTOML(path)
+	// applyDeepSeek overwrote the operator's own provider choice and their own
+	// "openai" provider entry, so put theirs back rather than leaving the tool
+	// pointing at a dead entry.
+	if plan.ok() {
+		restoreKeys(cfg, plan.region(), "provider")
+	} else {
+		// No backup: the prior provider is unknowable, so fall back to the
+		// previous behaviour of naming DeepSeek's own provider.
+		cfg["provider"] = "deepseek"
+	}
+	if p, ok := cfg["providers"].(map[string]any); ok {
+		prev := plan.region("providers")
+		restoreKeys(p, prev, "openai")
+		pruneRestored(cfg, "providers", prev != nil)
+	}
+	if err := writeTOMLReset(path, cfg); err != nil {
+		return Result{}, err
+	}
+	return Result{Message: resetMessage("DeepSeek TUI reset.", path, plan.mode()), ConfigPath: path}, nil
 }
 
 func deepSeekConfigured(home string) (bool, string) {
@@ -424,27 +557,25 @@ func resetJcode(home string) (Result, error) {
 	if err != nil || !exists {
 		return Result{Message: "No jcode config to reset", ConfigPath: path}, err
 	}
+	plan := planTOML(path)
 	if p, ok := cfg["providers"].(map[string]any); ok {
-		delete(p, "9router")
-		pruneEmpty(cfg, "providers")
+		prev := plan.region("providers")
+		restoreKeys(p, prev, "9router")
+		pruneRestored(cfg, "providers", prev != nil)
 	}
-	if _, err := writeTOML(path, cfg); err != nil {
+	if err := writeTOMLReset(path, cfg); err != nil {
 		return Result{}, err
 	}
 	envPath := jcodeEnvPath(home)
 	if envText, err := readFile(envPath); err == nil && envText != nil {
-		lines := strings.Split(string(envText), "\n")
-		kept := lines[:0]
-		for _, l := range lines {
-			if !strings.HasPrefix(strings.TrimSpace(l), jcodeKeyEnv+"=") {
-				kept = append(kept, l)
-			}
-		}
-		if _, err := writeFile(envPath, []byte(strings.Join(kept, "\n"))); err != nil {
+		// JCODE_9ROUTER_API_KEY is 9router's own variable name, so unlike
+		// Hermes' generic OPENAI_API_KEY it is removed even when the backup
+		// happens to carry a copy.
+		if err := writeReset(envPath, []byte(removeEnvLine(string(envText), jcodeKeyEnv))); err != nil {
 			return Result{}, err
 		}
 	}
-	return Result{Message: "9router provider removed from jcode", ConfigPath: path}, nil
+	return Result{Message: resetMessage("jcode reset.", path, plan.mode()), ConfigPath: path}, nil
 }
 
 func jcodeConfigured(home string) (bool, string) {

@@ -134,7 +134,7 @@
   }
 
   async function resetInstaller(tool: ToolItem) {
-    if (installBusy || !confirm(`Remove the 9router settings from ${tool.name}? Other settings are kept.`)) return
+    if (installBusy || !confirm(`Remove the 9router settings from ${tool.name}? Your own values for those settings are restored, and other settings are kept.`)) return
     installBusy = 'reset'
     installError = ''
     installMessage = ''
@@ -841,7 +841,8 @@
             <p class="text-xs text-text-muted">
               Writes the gateway URL, an API key and the model into {selectedTool.name}'s config
               {#if st?.configPath}(<code class="font-mono text-[11px] break-all">{st.configPath}</code>){/if}.
-              Other settings are kept and the original file is backed up once.
+              Other settings are kept, the original file is backed up once, and Remove puts your
+              own values for those settings back.
             </p>
             <div class="flex flex-col gap-2 sm:flex-row">
               <input

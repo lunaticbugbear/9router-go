@@ -213,6 +213,67 @@ Latest validation:
   `autoUpdateEnabled:false`. Sidebar showed no update banner. Test service and
   disposable database were removed afterward.
 
+## Security Fixes 2026-09-28 (both HIGH, both found by exercising the features live)
+
+Both of these were found by actually driving the running gateway and the real
+installers, not by reading the code or by unit tests. That matters because the
+previous handover recorded both features as unverified (see Open Items 2): the
+gaps only showed up once the features were used the way a user uses them.
+
+- **"Ask AI" leaked full API keys (HIGH).** `POST /api/dashboard/cli-tools/assist`
+  had no server-side redaction. The only masking was client-side, in
+  `web/src/components/CliToolsView.svelte` `buildToolContext()`, plus a
+  system-prompt instruction, so any direct API caller bypassed both and the
+  handler returned the model's answer and forwarded the operator's `context`
+  verbatim. Reproduced against the live gateway: a full API key came back in the
+  answer. Fixed by a new narrow repo query `(*Repo).SecretValues()`
+  (`internal/db/secrets.go`) that enumerates the credential *values* the gateway
+  actually stores — the `apiKeys.key` column plus credential-shaped fields in
+  each `providerConnections.data` blob, walked recursively and matched by an
+  explicit name set with a `*token`/`*secret`/`*apikey`/`*password`/`*_key`
+  suffix fallback. `internal/handlers/chat/cli_assist.go` now scrubs **both**
+  the assembled outgoing prompt and the returned answer against that list,
+  replacing occurrences with the literal `<your-api-key>` the UI already
+  promised. The match is value-based rather than pattern-based, so it cannot
+  miss a real key or mangle ordinary prose; values under 8 characters are
+  dropped, the list is applied longest-first, and every occurrence is replaced.
+  The upstream error text is scrubbed **before** the 300-byte truncation,
+  otherwise a cut mid-key would leave an unrecognisable prefix. It fails
+  **closed**: HTTP 503 if the credential list cannot be read (an empty list is
+  not a failure and still answers). No secret value is logged. The earlier
+  handover note "Ask AI setup panel (keys redacted)" described the client-side
+  masking only; that is what this fixes.
+- **Installer "Remove"/Reset destroyed the operator's own settings (HIGH).**
+  The UI and CHANGELOG promised "Remove strips only 9router keys / other
+  settings are kept", but Reset *deleted* the managed keys rather than
+  restoring what was there before 9router wrote to the file, so a user's own
+  `ANTHROPIC_BASE_URL`, their own `model = "gpt-5-codex"`, or their own Cline
+  provider choice were destroyed. The install already kept the true original as
+  `<path>.9router.bak`; Reset simply never read it. Fixed by
+  `internal/clisetup/restore.go`: Reset now restores the pre-9router value of
+  each managed key from that backup, per key. A key 9router merely *overwrote*
+  is restored; a key in 9router's own namespace (`9router` provider tables,
+  `9router/`-prefixed model ids, the `9Router` Copilot entry, `custom:9Router*`
+  ids, `JCODE_9ROUTER_API_KEY`) is **removed** even when the backup has a copy,
+  so a stale gateway config is not resurrected; a managed key absent from the
+  backup is removed; unrelated settings and later user edits survive. With no
+  backup it falls back to deletion and says so honestly in the message. Reset
+  never rewrites the backup (new `writeReset`/`writeJSONReset`/`writeTOMLReset`
+  path). 10 installers were converted; `copilot` and `droid` were audited and
+  confirmed already correct, because their managed unit is their own namespace
+  so removal is already the exact inverse. All 13 registered installers are
+  covered by tests. Also fixed: `claudeConfigured` now requires the URL to look
+  like this gateway, otherwise a *restored* corporate URL still reported "Using
+  9router"; and OpenClaw reset now clears the per-agent `models.json` gateway
+  entry the old code left behind.
+
+How these were exercised: Ask AI was run against a real connected provider
+through the live gateway (which is what produced the leaked key and then
+confirmed the fix), and the installers were driven in an **isolated temp
+`HOME`**, never the operator's real configs, so no live CLI config was modified.
+The live gateway on 20130 was rebuilt, reinstalled and restarted with these
+changes and reports `{"status":"ok"}`.
+
 ## OMP Runtime Incident
 
 The previous long OMP session entered Vibe mode and launched parallel workers.
@@ -272,14 +333,20 @@ All committed locally (no push). Highlights:
    The live-test gate now covers chat **and** media: `requireLiveE2E` is applied
    to 27 tests across 7 files, including the media TTS/voices tests that were
    silently reaching `www.bing.com`, `opencode.ai`, and `api.elevenlabs.io`.
-2. **No live verification yet.** Ask AI and every one-click installer were
-   tested only with unit tests (temp HOME) and mocked browser data. The live DB
-   has 0 providers, so neither has run against a real provider. To verify:
-   connect a provider, open CLI Tools, open a tool, run "Ask AI", then run
-   one-click setup for a tool the user agrees to modify. Check the written
-   config and the `.9router.bak` backup, make a real request from the tool
-   through the gateway, then use Remove. Do not apply installers to the user's
-   real configs without asking.
+2. **Live verification done 2026-09-28 — and it found two HIGH bugs.**
+   Both features have now been exercised for real, not only unit-tested, and
+   that is exactly how the two security fixes above were found. "Ask AI" was
+   run against a real connected provider through the live gateway: the
+   dashboard-only redaction was bypassable, and a full API key came back in the
+   answer. The installers were driven end to end in an **isolated temp `HOME`**,
+   never the operator's real configs, which is where the "Remove deletes your
+   own settings" behaviour showed up. Both are fixed and covered by tests (see
+   "Security Fixes 2026-09-28"). Still open: the installers have not been
+   pointed at a tool that then makes a real request through the gateway — that
+   round trip (install, request, Remove) against a real CLI remains unverified,
+   and the live DB still has 0 providers, so Ask AI's fix was confirmed against
+   the provider connection present at the time rather than re-run since. Do not
+   apply installers to the user's real configs without asking.
 
 ## Next Work
 
