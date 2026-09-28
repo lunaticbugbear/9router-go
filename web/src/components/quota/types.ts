@@ -344,6 +344,31 @@ export function getRemainingPercentage(quota: Partial<NormalizedQuota>): number 
   return calculatePercentage(quota?.used, quota?.total)
 }
 
+// A quota row is depleted when the server says so outright
+// (remainingPercentage === 0) or when a usable total puts the remaining
+// percentage at or below the threshold.
+//
+// The explicit server figure matters because "total === 0" is ambiguous: the
+// API uses it for both an unlimited row and an exhausted one. An exhausted
+// Claude account comes back as total 0 / used 0 / remainingPercentage 0, and
+// requiring a positive total here made it invisible to the bulk actions —
+// "Turn off Empty" then matched nothing and silently did nothing. Rows with
+// neither a usable total nor an explicit server percentage are left alone:
+// that is also the shape of an error row, which must not be turned off.
+export function isQuotaDepleted(
+  quota: Partial<NormalizedQuota> | null | undefined,
+  threshold = DEPLETED_QUOTA_THRESHOLD,
+): boolean {
+  if (!quota || typeof quota !== 'object') return false
+  if (quota.unlimited === true) return false
+  if (quota.remainingPercentage !== undefined) {
+    const pct = Number(quota.remainingPercentage)
+    return Number.isFinite(pct) && pct <= threshold
+  }
+  if (!quota.total || quota.total <= 0) return false
+  return calculatePercentage(quota.used, quota.total) <= threshold
+}
+
 // ─── Quota visibility (hide/show rows, persisted via /api/settings) ─────────
 export function getQuotaVisibilityKey(quota: Partial<NormalizedQuota> | null | undefined): string {
   if (!quota || typeof quota !== 'object') return ''
@@ -631,15 +656,25 @@ export function parseQuotaData(provider: string, data: unknown): NormalizedQuota
           Object.entries(d.quotas).forEach(([name, quota]) => {
             const used = Number(quota.used) || 0
             const total = Number(quota.total) || 0
+            // `remaining` is the server's own figure only. Substituting a
+            // guessed total here ((total || 100)) made an exhausted account
+            // — which the server reports as total 0 / used 0 with
+            // remainingPercentage 0 — evaluate to 100% remaining and render
+            // green. Leaving it undefined lets getRemainingPercentage() use
+            // the server's remainingPercentage; a computed percentage is only
+            // derived when the total is actually usable.
+            const remaining = quota.remaining !== undefined ? Number(quota.remaining) : undefined
             normalizedQuotas.push({
               name,
               used,
               total,
-              remaining: quota.remaining !== undefined ? Number(quota.remaining) : Math.max(0, (total || 100) - used),
+              remaining,
               remainingPercentage:
                 quota.remainingPercentage !== undefined
                   ? Number(quota.remainingPercentage)
-                  : calculatePercentage(used, total),
+                  : total > 0
+                    ? calculatePercentage(used, total)
+                    : undefined,
               resetAt: (quota.resetAt as string) || null,
             })
           })

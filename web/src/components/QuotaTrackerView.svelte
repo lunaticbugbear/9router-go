@@ -18,11 +18,9 @@
     ACCOUNT_PAGE_SIZE_OPTIONS,
     AUTO_REFRESH_STORAGE_KEY,
     CLAUDE_REFRESH_INTERVAL_MS,
-    DEPLETED_QUOTA_THRESHOLD,
     QUOTA_SORT_OPTIONS,
     REFRESH_INTERVAL_MS,
     buildLoadingState,
-    calculatePercentage,
     filterQuotaStateByConnections,
     filterQuotasByVisibility,
     getConnectionsEmptyMessage,
@@ -33,6 +31,7 @@
     getQuotaVisibilityKey,
     getSafePagination,
     getSafeTotals,
+    isQuotaDepleted,
     parseQuotaData,
     setQuotaCache,
     shouldResetPage,
@@ -122,6 +121,9 @@
   let editTestStatus = $state<'ok' | 'error' | null>(null)
   let editTestError = $state<string | null>(null)
   let isSavingEdit = $state(false)
+  // Rejected save: kept on screen inside the modal so the operator sees why
+  // the edit did not stick (the modal deliberately stays open).
+  let editSaveError = $state<string | null>(null)
   let copiedArnId = $state<string | null>(null)
 
   // Timers
@@ -224,6 +226,7 @@
     editPriority = conn.priority ?? 1
     editTestStatus = null
     editTestError = null
+    editSaveError = null
   }
 
   async function testEditingConnection() {
@@ -250,6 +253,7 @@
   async function saveEditingConnection() {
     if (!editingConnection) return
     isSavingEdit = true
+    editSaveError = null
     try {
       await api.updateConnection(editingConnection.id, {
         name: editName.trim(),
@@ -258,7 +262,17 @@
       editingConnection = null
       await fetchConnections(page)
     } catch (err) {
-      console.error('Failed to save connection:', err)
+      const message = err instanceof Error ? err.message : String(err)
+      // Log the message, not the Error object: devtools renders an Error
+      // argument as "[object Object]", which hides the server's reason.
+      console.error(`Failed to save connection: ${message}`)
+      // The modal stays open with the operator's edits intact so the save can
+      // be retried; the failure is also announced so it is not missed.
+      editSaveError = message
+      notifications.error(
+        `${getConnectionLabel(editingConnection) || providerLabel(editingConnection.provider)}: ${message}`,
+        'Could not save connection',
+      )
     } finally {
       isSavingEdit = false
     }
@@ -281,10 +295,7 @@
   function isConnectionDepleted(conn: ProviderConnection): boolean {
     const quotas = quotaData[conn.id]?.quotas
     if (!quotas?.length) return false
-    return quotas.some((q) => {
-      if (!q.total || q.total <= 0) return false
-      return calculatePercentage(q.used, q.total) <= DEPLETED_QUOTA_THRESHOLD
-    })
+    return quotas.some((q) => isQuotaDepleted(q))
   }
 
   function isActiveConn(conn: ProviderConnection): boolean {
@@ -562,8 +573,18 @@
     try {
       await api.patchSettings({ quotaVisibility: nextVisibility })
     } catch (error) {
-      console.error('Error updating quota visibility:', error)
+      // Roll back immediately: leaving the optimistic hide in place until the
+      // next fetch resolves would show a row as hidden that the server still
+      // stores as visible, and nothing told the operator the write failed.
       quotaVisibility = previousVisibility
+      const message = error instanceof Error ? error.message : String(error)
+      // Log the message, not the Error object: devtools renders an Error
+      // argument as "[object Object]", which hides the server's reason.
+      console.error(`Error updating quota visibility: ${message}`)
+      notifications.error(
+        `Quota visibility was not saved — ${message}`,
+        'Could not update quota visibility',
+      )
     }
   }
 
@@ -1429,6 +1450,16 @@
           <div class="flex items-center gap-1.5 text-xs text-red-500">
             <span class="material-symbols-outlined text-sm">error</span>
             {editTestError || 'Test failed'}
+          </div>
+        {/if}
+
+        {#if editSaveError}
+          <div
+            class="flex items-start gap-1.5 rounded-md border border-danger/30 bg-danger/5 px-2 py-1.5 text-xs text-danger"
+            role="alert"
+          >
+            <span class="material-symbols-outlined shrink-0 text-sm">error</span>
+            <span class="min-w-0 break-words">Save failed — {editSaveError}</span>
           </div>
         {/if}
 

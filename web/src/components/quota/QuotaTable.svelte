@@ -137,6 +137,20 @@
         {@const resetDisplay = formatResetTimeDisplay(quota.resetAt)}
         {@const recurring = quota.recurring !== false}
         {@const countdownLabel = recurring ? `in ${countdown}` : `expires in ${countdown}`}
+        <!-- A zero total is ambiguous: it means "unlimited" for rows that say
+             so (isUnlimited, handled below) and "no meaningful total" for
+             exhausted ones. Printing "∞" for the latter made an exhausted
+             account read "0 / ∞" next to "0%" — claiming infinite headroom
+             and zero remaining at once. Only an explicitly unlimited row may
+             claim infinity; otherwise report the consumed count alone rather
+             than inventing a denominator. -->
+        {@const usageText = isUnlimited
+          ? `${fmtNum(quota.used)} used · Unlimited`
+          : isCreditBalance
+            ? `Credit: ${(quota.total || 0).toFixed(2)} ${quota.currency || ''}`
+            : (quota.total || 0) > 0
+              ? `${fmtNum(quota.used)} / ${fmtNum(quota.total)}`
+              : `${fmtNum(quota.used)} / —`}
 
         <div
           class="flex items-center gap-2 border-b border-border-subtle/60 hover:bg-surface-2/60 transition-colors {cellPad}"
@@ -172,17 +186,9 @@
             >
               <span
                 class="text-text-muted truncate"
-                title={isUnlimited
-                  ? `${fmtNum(quota.used)} used · Unlimited`
-                  : isCreditBalance
-                    ? `Credit balance: ${(quota.total || 0).toFixed(2)} ${quota.currency || ''}`
-                    : `${fmtNum(quota.used)} / ${(quota.total || 0) > 0 ? fmtNum(quota.total) : '∞'}`}
+                title={usageText}
               >
-                {isUnlimited
-                  ? `${fmtNum(quota.used)} used · Unlimited`
-                  : isCreditBalance
-                    ? `Credit: ${(quota.total || 0).toFixed(2)} ${quota.currency || ''}`
-                    : `${fmtNum(quota.used)} / ${(quota.total || 0) > 0 ? fmtNum(quota.total) : '∞'}`}
+                {usageText}
               </span>
               <span
                 class="font-medium shrink-0 {isUnlimited
