@@ -3,6 +3,10 @@
 
 ## [Unreleased]
 
+### Dashboard API client: no placeholder key when none is stored
+
+- `getAuthHeaders()` in `web/src/api/client.ts` no longer falls back to a hardcoded placeholder key when `localStorage` holds none; with no key stored it now sends no `Authorization` header at all. The placeholder is a dev literal the gateway rejects with 401, so a browser that had never stored a key was sending `Authorization: Bearer sk-…` and getting "Invalid API key" instead of the honest "not configured" response.
+
 ### CLI Tools "Ask AI" redaction: server-side, both directions, and it fails closed
 
 - The "Ask AI to set it up" panel documented that API keys are redacted to `<your-api-key>`. That was only true for requests the dashboard made. The masking lived in `web/src/components/CliToolsView.svelte` `buildToolContext()`, which replaced key-shaped environment variables before sending them, and the only other guard was an instruction in the system prompt. A direct API call to `POST /api/dashboard/cli-tools/assist` — or any caller that skipped the dashboard — bypassed both, and the handler returned the model's answer and forwarded the operator's `context` verbatim. This was reproduced against the running gateway: a full API key came back in the answer.

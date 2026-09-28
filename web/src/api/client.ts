@@ -370,9 +370,11 @@ export function isAuthenticated(): boolean {
   return false
 }
 
-// Helper to get auth header if stored in localStorage
+// Helper to get auth header if stored in localStorage. When no key is stored
+// no Authorization header is sent, so the gateway answers "not configured"
+// rather than rejecting a placeholder key as "Invalid API key".
 export function getAuthHeaders(): Record<string, string> {
-  const token = localStorage.getItem('9router_key') || 'sk-8b71f86e0a1f2fb5-nhz496-cfa1c800'
+  const token = localStorage.getItem('9router_key')
   return {
     'Content-Type': 'application/json',
     ...(token ? { Authorization: `Bearer ${token}` } : {}),
