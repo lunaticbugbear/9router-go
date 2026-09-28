@@ -381,6 +381,119 @@ export function getAuthHeaders(): Record<string, string> {
   }
 }
 
+// --- Session loss -----------------------------------------------------------
+//
+// A 401 from a dashboard API means the login session is gone: the auth_token
+// cookie expired, the server was restarted with a different signing secret, or
+// the session was invalidated server-side. Callers of request() deliberately
+// swallow errors (the poll uses `.catch(() => null)`, loadData uses
+// `.catch(() => [])`), so without handling it here a dead session would be
+// indistinguishable from an empty result and the shell would stay rendered and
+// interactive forever. It is handled once, centrally, instead of at each call
+// site.
+
+/** Endpoints that belong to the login flow itself. A 401 from one of these is
+ * an ordinary answer (no session yet, wrong password) rather than a lost
+ * session, and reacting to it would be what turns the transition into a
+ * redirect loop — the login page and the auth probes must never trigger it. */
+const AUTH_ENDPOINTS: Record<string, true> = {
+  '/api/auth/login': true,
+  '/api/auth/logout': true,
+  '/api/auth/status': true,
+  '/api/settings/require-login': true,
+}
+
+type SessionExpiredHandler = () => void
+
+const sessionExpiredHandlers = new Set<SessionExpiredHandler>()
+
+/** Registers a listener called once when a dashboard 401 is confirmed to be a
+ * lost session. Returns an unsubscribe function. */
+export function onSessionExpired(handler: SessionExpiredHandler): () => void {
+  sessionExpiredHandlers.add(handler)
+  return () => {
+    sessionExpiredHandlers.delete(handler)
+  }
+}
+
+/** Latched once the session is known to be gone, so a page load redirects once
+ * no matter how many concurrent calls see 401. */
+let sessionLost = false
+
+/** In-flight confirmation probe, shared by concurrent 401s. */
+let confirmation: Promise<boolean> | null = null
+
+/** Clears the latch once a session is (re)established, so a later expiry is
+ * handled again. Without this, signing back in after an expiry would leave the
+ * handling disabled for the rest of the page's life. */
+export function resetSessionLoss(): void {
+  sessionLost = false
+}
+
+/** Asks the server whether the session is still good. `/api/auth/status` is a
+ * public endpoint (it is served before the login gate), so it answers honestly
+ * even when the cookie is expired. It is fetched directly rather than through
+ * request() so it can never re-enter the 401 handling.
+ *
+ * Anything that is not a clean gateway answer counts as "lost": a network
+ * failure, a captive portal interstitial, or a body without the expected shape
+ * cannot prove the session is alive, and the caller already holds a 401. */
+async function confirmSessionLost(): Promise<boolean> {
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 5000)
+  try {
+    const res = await fetch('/api/auth/status', {
+      headers: { 'Content-Type': 'application/json' },
+      cache: 'no-store',
+      signal: controller.signal,
+    })
+    if (!res.ok) return true
+    const data = await res.json()
+    // The real endpoint always answers with a boolean requireLogin; anything
+    // else (an error envelope, a proxy's JSON, an empty object) is not an
+    // answer we can trust.
+    if (typeof data?.requireLogin !== 'boolean') return true
+    // Login is genuinely not required — the 401 came from something else.
+    if (data.requireLogin === false) return false
+    return data.authenticated !== true
+  } catch {
+    return true
+  } finally {
+    clearTimeout(timeoutId)
+  }
+}
+
+/** Reacts to a 401 from a dashboard API. Distinguishes a lost session from the
+ * other things that legitimately answer 401 (an upstream provider rejecting a
+ * stored credential on `/api/providers/{id}/models`, a rejected API key, the
+ * login form's own wrong-password response) by asking the server directly. */
+async function handleUnauthorized(path: string): Promise<void> {
+  const clean = path.split('?')[0].replace(/\/+$/, '') || '/'
+  if (sessionLost || AUTH_ENDPOINTS[clean]) return
+  if (!confirmation) {
+    confirmation = confirmSessionLost().finally(() => {
+      confirmation = null
+    })
+  }
+  let lost = true
+  try {
+    lost = await confirmation
+  } catch {
+    lost = true
+  }
+  if (!lost || sessionLost) return
+  sessionLost = true
+  try {
+    sessionStorage.removeItem('9router_auth')
+    localStorage.removeItem('9router_auth')
+  } catch {}
+  for (const handler of sessionExpiredHandlers) {
+    try {
+      handler()
+    } catch {}
+  }
+}
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = {
     ...getAuthHeaders(),
@@ -400,6 +513,9 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     } catch {
       errText = ''
     }
+    // A thrown fetch (offline, DNS failure, abort) never reaches this point, so
+    // a network failure cannot be mistaken for a lost session.
+    if (res.status === 401) await handleUnauthorized(path)
     throw new Error(errText || `Request failed with status ${res.status}`)
   }
   return res.json()
@@ -875,7 +991,7 @@ export const api = {
       loggedIn: false,
     })),
   enableTailscale: () =>
-    request<{ success?: boolean; tunnelUrl?: string; needsLogin?: boolean; authUrl?: string; funnelNotEnabled?: boolean; error?: string }>('/api/tunnel/tailscale-enable', {
+    request<{ success?: boolean; tunnelUrl?: string; needsLogin?: boolean; authUrl?: string; funnelNotEnabled?: boolean; enableUrl?: string; error?: string }>('/api/tunnel/tailscale-enable', {
       method: 'POST',
     }),
   disableTailscale: () =>
@@ -966,36 +1082,52 @@ export const api = {
       { method: 'DELETE' }
     ),
   // Auth
+  /** Reads the session state for the initial gate.
+   *
+   * Fails CLOSED: when neither probe answers cleanly the result is "login
+   * required, not authenticated", so the SPA shows the login form instead of a
+   * dashboard whose APIs will 401. The alternative — claiming login is not
+   * required — renders the shell on an unknown answer, which is what a captive
+   * portal or a proxy interstitial would produce. LoginView already uses the
+   * same safe default for `hasPassword`.
+   *
+   * The genuine "login not required" path is untouched: it needs the server to
+   * say so explicitly (`requireLogin === false`), which is also what the
+   * session-loss confirmation in handleUnauthorized relies on. */
   checkRequireLogin: async (): Promise<RequireLoginResponse> => {
     try {
-      const res = await fetch('/api/settings/require-login')
+      const res = await fetch('/api/settings/require-login', { cache: 'no-store' })
       if (res.ok) {
         const data = await res.json()
-        return {
-          requireLogin: !!data.requireLogin,
-          tunnelDashboardAccess: !!data.tunnelDashboardAccess,
-          tunnelUrl: data.tunnelUrl,
-          tailscaleUrl: data.tailscaleUrl,
-          hasPassword: !!data.hasPassword,
-          usesDefaultPassword: !!data.usesDefaultPassword,
-          authenticated: !!data.authenticated,
+        if (typeof data?.requireLogin === 'boolean') {
+          return {
+            requireLogin: data.requireLogin,
+            tunnelDashboardAccess: !!data.tunnelDashboardAccess,
+            tunnelUrl: data.tunnelUrl,
+            tailscaleUrl: data.tailscaleUrl,
+            hasPassword: !!data.hasPassword,
+            usesDefaultPassword: !!data.usesDefaultPassword,
+            authenticated: !!data.authenticated,
+          }
         }
       }
     } catch {}
     try {
-      const res = await fetch('/api/auth/status')
+      const res = await fetch('/api/auth/status', { cache: 'no-store' })
       if (res.ok) {
         const data = await res.json()
-        return {
-          requireLogin: !!data.requireLogin,
-          hasPassword: !!data.hasPassword,
-          usesDefaultPassword: !!data.usesDefaultPassword,
-          authMode: data.authMode,
-          authenticated: !!data.authenticated,
+        if (typeof data?.requireLogin === 'boolean') {
+          return {
+            requireLogin: data.requireLogin,
+            hasPassword: !!data.hasPassword,
+            usesDefaultPassword: !!data.usesDefaultPassword,
+            authMode: data.authMode,
+            authenticated: !!data.authenticated,
+          }
         }
       }
     } catch {}
-    return { requireLogin: false }
+    return { requireLogin: true, authenticated: false }
   },
   login: async (password: string): Promise<LoginResponse> => {
     const res = await fetch('/api/auth/login', {
@@ -1009,6 +1141,8 @@ export const api = {
       // the client-side gate (isAuthenticated) since JS cannot read it.
       sessionStorage.setItem('9router_auth', 'true')
       localStorage.setItem('9router_auth', 'true')
+      // A fresh session must be able to expire-and-redirect again later.
+      resetSessionLoss()
       return { success: true, mustChangePassword: !!data.mustChangePassword }
     }
     let errText = 'Invalid password'

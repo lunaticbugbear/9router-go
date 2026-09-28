@@ -274,6 +274,69 @@ confirmed the fix), and the installers were driven in an **isolated temp
 The live gateway on 20130 was rebuilt, reinstalled and restarted with these
 changes and reports `{"status":"ok"}`.
 
+## Security Fixes 2026-09-28 (found by review, not by tests)
+
+These were found by reading the trust path, not by a failing test or by using
+the feature. The distinction matters: the tests that existed for this code
+**passed against the vulnerable build**, so no test run would have surfaced it.
+
+- **The local-caller check trusted a client-supplied header (HIGH).** The
+  decision "is this caller on this machine?" read the request's `Host` header
+  first, and `Host` is whatever the caller types. Sending `Host: localhost`
+  therefore made a remote caller local. One root cause, three exploits:
+  it defeated the fresh-install default-password guard (`POST /api/auth/login`
+  accepts `123456` only from the local machine, so a remote caller could get a
+  session and mint a gateway API key); it defeated the tunnel dashboard-access
+  gate (a spoofed loopback `Host` waived the gate that is supposed to refuse
+  tunnel-hostname dashboard access); and it skipped the provider-node SSRF guard
+  (a self-hosted node URL is validated only for local callers, so a remote
+  caller could point the gateway at an internal service with the stored provider
+  credential attached). The Go port had additionally dropped upstream's
+  peer-token proof: `x-9r-real-ip` was read without requiring the
+  `x-9r-peer-token` secret that upstream requires, so an untrusted header could
+  also widen the local set. Fixed by making `auth.IsLocalRequest`
+  (`internal/auth/localpeer.go`) the single trust decision, taken from the real
+  peer address (`ClientAddr`) and never from `Host`. A forwarded address is
+  honoured only under the existing trust config (`TRUST_PROXY`/
+  `TRUST_CLOUDFLARE`, or a valid peer-token proof); a loopback peer is
+  necessary but not sufficient, because a request carrying a non-loopback
+  `Origin` is refused so a page served from a remote origin inside the
+  operator's own browser cannot reach the loopback listener. `nodeRequestIsLocal`,
+  `auth.TunnelLoginBlocked` and `auth.LoginClientIP` all route through the one
+  helper, so the login limiter and the local-caller check cannot disagree. The
+  existing test set a loopback `Host` and never varied the peer address, which
+  is precisely why it passed; the new regression tests vary `RemoteAddr` and
+  `Host` **independently**. Verified live: LAN address + `Host: localhost` +
+  default password answers `403`, the same request over a genuine loopback
+  connection answers `200`, and the local browser path is unaffected.
+- **Endpoint write failures reported success (HIGH).** `HandleTunnelDisable`,
+  `HandleTailscaleEnable` and `HandleTailscaleDisable` discarded the
+  `UpdateSettingsRaw` error and always answered `{"success":true}`, so the UI
+  reported remote access as disconnected when the write never landed. They now
+  return `500` via the sibling `writePlainError` convention, and
+  `EndpointView.svelte` shows a row-level notice with its retry action instead
+  of a state change that did not happen, plus the `funnelNotEnabled` reason and
+  its `enableUrl`.
+- **A dead dashboard stayed rendered after session expiry (HIGH + MEDIUM-HIGH).**
+  Dashboard API callers swallow their errors and auth was evaluated once in
+  `onMount`, so a mid-session `401` left the shell on screen and interactive
+  forever. A `401` now triggers one central, single-flight confirmation against
+  the public `/api/auth/status`, which distinguishes a lost session from the
+  handlers that legitimately answer `401` (upstream-credential rejections, the
+  login form), and hands off to login with a notice. `checkAuth` now fails
+  closed: a probe error or a non-JSON body shows login instead of the dashboard.
+
+Validation: `go build ./...`, `go vet ./...` and
+`env -u DB_PATH -u DATA_DIR -u UPDATE_URL -u UPDATE_REPO go test ./... -count=1`
+all clean (35 packages ok), `npx tsc -b` clean, `npm run lint` exits 0 with only
+the two pre-existing warnings (`TerminalView.svelte`,
+`ProviderDetailView.svelte`), `npx vite build` succeeds, and `gofmt -l` is empty
+on every file in the change. The live gateway on 20130 was rebuilt, reinstalled
+and restarted with these changes; `/health` reports `{"status":"ok"}`, the
+served asset hash matches the fresh build, and a real local browser login
+(`/dashboard` -> login -> `/dashboard/overview`) renders the dashboard with its
+APIs answering `200` and no login loop.
+
 ## OMP Runtime Incident
 
 The previous long OMP session entered Vibe mode and launched parallel workers.

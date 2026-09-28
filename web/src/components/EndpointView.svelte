@@ -80,6 +80,11 @@
   let tailscaleStatusText = $state('')
   let tailscaleAuthUrl = $state('')
   let tailscaleError = $state<string | null>(null)
+  // Set when Tailscale answers funnelNotEnabled: the tailnet has Funnel switched
+  // off, so the server hands back the console URL that turns it on. The notice
+  // is rendered below the Tailscale row; the empty string means "no notice".
+  let tailscaleFunnelEnableUrl = $state('')
+  let tailscaleFunnelNotice = $state('')
   let tailscaleInstalled = $state<boolean | null>(null)
   let showTailscaleModal = $state(false)
   let showDisableTailscaleModal = $state(false)
@@ -292,6 +297,7 @@
     isTunnelLoading = true
     tunnelStatusText = 'Creating tunnel...'
     tunnelError = null
+    tunnelRowNotice = ''
 
     try {
       const res = await api.enableTunnel()
@@ -313,10 +319,19 @@
     }
   }
 
+  // A failed disable leaves the row in its connected state, where the row's own
+  // error branch cannot render (that branch needs the tunnel to be off). Each
+  // row therefore gets a line of its own underneath, carrying the server's
+  // reason; the row keeps its URL and Disable button as the retry path.
+  let tunnelRowNotice = $state('')
+  let tailscaleRowNotice = $state('')
+
   // Disable Cloudflare Tunnel
   async function stopTunnel() {
     showDisableTunnelModal = false
     isTunnelLoading = true
+    tunnelError = null
+    tunnelRowNotice = ''
     try {
       await api.disableTunnel()
       tunnelEnabled = false
@@ -324,7 +339,10 @@
       tunnelUrl = ''
       publicUrl = ''
     } catch (err) {
-      tunnelError = err instanceof Error ? err.message : String(err)
+      // The disable write did not land, so the tunnel is still configured.
+      // Leave the state alone (the row keeps its URL and Disable button) and
+      // report the failure instead of showing "Not connected".
+      tunnelRowNotice = err instanceof Error ? err.message : String(err)
     } finally {
       isTunnelLoading = false
     }
@@ -355,6 +373,9 @@
     isTailscaleLoading = true
     tailscaleStatusText = 'Connecting to Tailscale...'
     tailscaleAuthUrl = ''
+    tailscaleFunnelEnableUrl = ''
+    tailscaleFunnelNotice = ''
+    tailscaleRowNotice = ''
     tailscaleError = null
 
     try {
@@ -367,10 +388,23 @@
         tailscaleAuthUrl = res.authUrl
         return
       }
+      // Funnel is off for the whole tailnet. Upstream returns this as a plain
+      // success:false with no message, so it used to render as nothing at all —
+      // the operator pressed Enable, the row silently stayed "Not connected",
+      // and there was no way to learn why. Surface the reason below the row
+      // (with the console URL that turns Funnel on) and keep the row's Enable
+      // button as the retry path.
+      if (res.funnelNotEnabled) {
+        tailscaleFunnelNotice = 'Tailscale Funnel is not enabled for your tailnet. Turn it on in the Tailscale admin console, then enable Tailscale here again.'
+        tailscaleFunnelEnableUrl = res.enableUrl || ''
+        return
+      }
       if (res.tunnelUrl) {
         tailscaleUrl = res.tunnelUrl
         tailscaleEnabled = true
         tailscaleRunning = true
+        tailscaleFunnelEnableUrl = ''
+        tailscaleFunnelNotice = ''
       }
     } catch (err) {
       tailscaleError = err instanceof Error ? err.message : String(err)
@@ -383,13 +417,17 @@
   async function stopTailscale() {
     showDisableTailscaleModal = false
     isTailscaleLoading = true
+    tailscaleError = null
+    tailscaleRowNotice = ''
     try {
       await api.disableTailscale()
       tailscaleEnabled = false
       tailscaleRunning = false
       tailscaleUrl = ''
     } catch (err) {
-      tailscaleError = err instanceof Error ? err.message : String(err)
+      // The disable write failed, so the funnel is still advertised. Keep the
+      // card as-is and say so instead of pretending it was stopped.
+      tailscaleRowNotice = err instanceof Error ? err.message : String(err)
     } finally {
       isTailscaleLoading = false
     }
@@ -704,6 +742,18 @@
         </div>
       </div>
 
+      <!-- A failed disable leaves the tunnel connected, so the row above cannot
+           show it. This line carries the server's reason and the row's own
+           Disable button stays as the retry path. -->
+      {#if tunnelRowNotice}
+        <div class="flex flex-wrap items-center gap-2 rounded-brand border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger sm:ml-[112px]">
+          <AlertCircle class="w-4 h-4 shrink-0" />
+          <p class="min-w-0 flex-1 leading-relaxed">
+            Tunnel is still active — it was not disconnected. {tunnelRowNotice}
+          </p>
+        </div>
+      {/if}
+
       <!-- Tailscale (Serve / Funnel) -->
       <div class="flex flex-col gap-2 sm:flex-row sm:items-center">
         <span
@@ -815,6 +865,35 @@
         {/if}
         </div>
       </div>
+
+      <!-- Same as the tunnel row: a failed disable keeps Tailscale connected. -->
+      {#if tailscaleRowNotice}
+        <div class="flex flex-wrap items-center gap-2 rounded-brand border border-danger/30 bg-danger/10 px-3 py-2 text-xs text-danger sm:ml-[112px]">
+          <AlertCircle class="w-4 h-4 shrink-0" />
+          <p class="min-w-0 flex-1 leading-relaxed">
+            Tailscale is still active — it was not disconnected. {tailscaleRowNotice}
+          </p>
+        </div>
+      {/if}
+
+      <!-- Tailscale Funnel off for the tailnet: the enable response carried a
+           reason and a console URL, and both used to be dropped on the floor. -->
+      {#if tailscaleFunnelNotice}
+        <div class="flex flex-wrap items-center gap-2 rounded-brand border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning sm:ml-[112px]">
+          <AlertTriangle class="w-4 h-4 shrink-0" />
+          <p class="min-w-0 flex-1 leading-relaxed">{tailscaleFunnelNotice}</p>
+          {#if tailscaleFunnelEnableUrl}
+            <button
+              type="button"
+              onclick={() => window.open(tailscaleFunnelEnableUrl, '_blank')}
+              class="flex shrink-0 cursor-pointer items-center gap-1.5 font-semibold underline hover:opacity-80"
+            >
+              <ExternalLink class="w-3.5 h-3.5" />
+              <span>Open Tailscale settings</span>
+            </button>
+          {/if}
+        </div>
+      {/if}
     </div>
 
     <!-- Pre-enable security gate banner (upstream isLoginUnsafe) -->

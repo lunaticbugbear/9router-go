@@ -3,6 +3,33 @@
 
 ## [Unreleased]
 
+### Security: the local-caller check trusted a client-supplied header
+
+- The check that decided "is this caller on this machine?" read the request's `Host` header first. `Host` is whatever the caller types, so a remote caller could send `Host: localhost` and be treated as local. That one root cause had three consequences:
+  - It defeated the fresh-install default-password guard. `POST /api/auth/login` accepts the default password `123456` only from the local machine; a remote caller that spoofed a loopback `Host` got a session, and with that session could mint a gateway API key.
+  - It defeated the tunnel dashboard-access gate. When tunnel/Tailscale dashboard access was not explicitly enabled, a request naming the tunnel hostname was meant to be refused; a spoofed loopback `Host` waived the gate.
+  - It skipped the SSRF guard on provider nodes. A self-hosted node URL is validated only for local callers, so a remote caller with a spoofed loopback `Host` skipped that validation and could point the gateway at an internal service, with the stored provider credential attached.
+- The Go port had also dropped upstream's peer-token proof: the `x-9r-real-ip` forwarded-address header was read without requiring the `x-9r-peer-token` secret that upstream requires, so an untrusted header could also widen what counted as local.
+- There is now one trust decision, `auth.IsLocalRequest` in `internal/auth/localpeer.go`, and every caller uses it. `nodeRequestIsLocal` in `internal/handlers/dashboard/provider_nodes.go` delegates to it, `auth.TunnelLoginBlocked` and `auth.LoginClientIP` are built on the same helper so the limiter and the local-caller check can no longer disagree, and the stale comment in `internal/middleware/dashboard_auth.go` claiming the header decides is corrected.
+- The decision is made from the real peer address (`ClientAddr`), never from `Host`. A forwarded address is honoured only when an existing trust configuration authorises it (`TRUST_PROXY`/`TRUST_CLOUDFLARE`, or a valid peer-token proof), so an untrusted header can never widen the local set. A loopback peer is necessary but not sufficient: when the request carries an `Origin`, that Origin must be loopback too, so a page served from a remote origin inside the operator's own browser cannot reach the loopback listener. Requests without an `Origin` (curl, the CLI) are unaffected.
+- The regression tests vary `RemoteAddr` and `Host` independently, which is exactly what the old test did not do — it set a loopback `Host` and never varied the peer, so it passed against the vulnerable code. New coverage in `internal/auth/localpeer_test.go`, `internal/auth/tunnel_independent_test.go`, `internal/handlers/dashboard/auth_localpeer_test.go`, `internal/handlers/dashboard/provider_nodes_localpeer_test.go` and `internal/middleware/tunnel_gate_test.go`.
+- Verified against the running gateway: a request to the LAN address carrying `Host: localhost` and the default password answers `403` ("Default password must be changed before remote access"), while the same request over a genuine loopback connection answers `200`. The local browser path is unaffected — signing in at `localhost:20130` still renders the dashboard and its APIs answer `200`.
+
+### Endpoint: tunnel and Tailscale disable reported success on a failed write
+
+- `HandleTunnelDisable`, `HandleTailscaleEnable` and `HandleTailscaleDisable` in `internal/handlers/dashboard/tunnel.go` discarded the error from `UpdateSettingsRaw` and answered `{"success":true}` regardless. When the write did not land, the UI reported remote access as disconnected while the stored settings still said it was up (or the reverse), and nothing told the operator otherwise.
+- All three now return `500` with the error text through the sibling `writePlainError` convention, so a failed write is a failed response.
+- `web/src/components/EndpointView.svelte` no longer swallows the error. The row shows its own notice and keeps its retry action instead of reporting a state change that did not happen, and it surfaces the `funnelNotEnabled` reason together with the `enableUrl` the server returns, so the operator is told where to enable the funnel rather than only that it is off.
+
+### Session expiry no longer leaves a dead dashboard rendered
+
+- A session that ended mid-use left the dashboard on screen and interactive indefinitely. Dashboard API callers swallow their errors (the poll uses `.catch(() => null)`, `loadData` reports nothing), and auth was evaluated once in `onMount`, so a `401` from an expired session changed nothing: the shell stayed rendered and every later action failed quietly.
+- A `401` from a dashboard API now triggers one central, single-flight confirmation against the public `/api/auth/status`. That probe distinguishes a lost session from the other handlers that legitimately answer `401` (upstream-credential rejections, the login form itself), so a rejected provider credential does not log the operator out. A confirmed loss hands off to the login view with a notice that the session ended, so it does not look like a random logout. The confirmation is single-flight, so a page firing several requests at once asks once.
+
+### Auth check fails closed
+
+- `checkAuth` treated a probe that did not answer as "login not required" and rendered the dashboard. A probe error, a network failure or a non-JSON body now shows the login view instead, so an unanswerable check is never taken as proof of a session.
+
 ### Dashboard API client: no placeholder key when none is stored
 
 - `getAuthHeaders()` in `web/src/api/client.ts` no longer falls back to a hardcoded placeholder key when `localStorage` holds none; with no key stored it now sends no `Authorization` header at all. The placeholder is a dev literal the gateway rejects with 401, so a browser that had never stored a key was sending `Authorization: Bearer sk-…` and getting "Invalid API key" instead of the honest "not configured" response.
@@ -76,6 +103,7 @@
 - The same exhausted row printed `0 / ∞`, claiming infinite headroom next to `0%`. A zero total is ambiguous — it means "unlimited" for rows that say so and "no meaningful total" for exhausted ones — and the cell rendered `∞` for any non-positive total. Only an explicitly unlimited row now shows `Unlimited`; a row with no usable total reports the consumed count alone (`0 / —`) instead of inventing a denominator.
 - Hiding a quota row failed silently. `updateQuotaVisibility()` logged the error and left the optimistic hide in place, so the row stayed hidden on screen while the server still stored it as visible, and the next fetch silently brought it back. It now rolls back to the previous visibility and raises an error notification carrying the server's message.
 - Saving an edit in the quota tracker's Edit Connection modal failed silently. The modal stayed open with no explanation and the only trace was a `console.error` whose argument devtools renders as `[object Object]`, hiding the server's reason. The failure now renders inside the modal (and as a notification), the modal deliberately stays open with the operator's edits intact so the save can be retried, and the logged text is the error message rather than the Error object.
+- Comment-only correction in `internal/handlers/dashboard/usage_providers.go` `grokMakeQuota`: the note claimed the frontend infers "unlimited" from `total === 0`. It no longer does, so the comment now states that the unlimited flag must be set explicitly and that a zero total is ambiguous. No behaviour change.
 
 ### Proxy pool schema bootstrap
 

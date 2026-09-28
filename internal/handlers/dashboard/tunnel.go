@@ -157,9 +157,15 @@ func (h *DashboardHandler) HandleTunnelEnable(w http.ResponseWriter, r *http.Req
 
 // HandleTunnelDisable handles POST /api/tunnel/disable.
 func (h *DashboardHandler) HandleTunnelDisable(w http.ResponseWriter, r *http.Request) {
-	_ = h.Repo.UpdateSettingsRaw(map[string]any{
+	// The write is the whole point of the endpoint: reporting success while the
+	// settings row still says the tunnel is up tells the operator that remote
+	// access was cut when it was not. Fail loudly instead.
+	if err := h.Repo.UpdateSettingsRaw(map[string]any{
 		"tunnelEnabled": false,
-	})
+	}); err != nil {
+		writePlainError(w, http.StatusInternalServerError, "Failed to disable tunnel: "+err.Error())
+		return
+	}
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{"success": true})
 }
 
@@ -283,10 +289,15 @@ func (h *DashboardHandler) HandleTailscaleEnable(w http.ResponseWriter, r *http.
 		return
 	}
 
-	_ = h.Repo.UpdateSettingsRaw(map[string]any{
+	if err := h.Repo.UpdateSettingsRaw(map[string]any{
 		"tailscaleEnabled": true,
 		"tailscaleUrl":     tunnelURL,
-	})
+	}); err != nil {
+		// The funnel is up but the gateway would forget it on the next status
+		// read, so report the failure rather than a success the UI cannot keep.
+		writePlainError(w, http.StatusInternalServerError, "Tailscale funnel started but saving the setting failed: "+err.Error())
+		return
+	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"success":   true,
@@ -302,10 +313,15 @@ func (h *DashboardHandler) HandleTailscaleDisable(w http.ResponseWriter, r *http
 		_ = exec.Command(bin, "funnel", "--bg", "reset").Run()
 	}
 
-	_ = h.Repo.UpdateSettingsRaw(map[string]any{
+	// See HandleTunnelDisable: a discarded error here would report the funnel
+	// as stopped while the settings row still advertises the public URL.
+	if err := h.Repo.UpdateSettingsRaw(map[string]any{
 		"tailscaleEnabled": false,
 		"tailscaleUrl":     "",
-	})
+	}); err != nil {
+		writePlainError(w, http.StatusInternalServerError, "Failed to disable Tailscale: "+err.Error())
+		return
+	}
 
 	handlerutil.WriteJSON(w, http.StatusOK, map[string]any{
 		"success": true,

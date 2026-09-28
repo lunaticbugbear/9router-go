@@ -109,7 +109,9 @@ func RequireDashboardPage(repo *db.Repo) func(http.Handler) http.Handler {
 }
 
 // tunnelPageBlocked reports whether the navigation arrives via a
-// tunnel/tailscale hostname whose dashboard access is disabled.
+// tunnel/tailscale front door whose dashboard access is disabled. The decision
+// is made from the real peer address, so a caller cannot waive the gate by
+// sending a loopback Host header (see auth.TunnelLoginBlocked).
 func tunnelPageBlocked(repo *db.Repo, r *http.Request) bool {
 	raw, err := repo.GetSettingsRaw()
 	if err != nil || raw == nil {

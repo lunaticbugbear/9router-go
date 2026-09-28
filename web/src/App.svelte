@@ -3,6 +3,7 @@
   import { Loader2 } from 'lucide-svelte'
   import {
     api,
+    onSessionExpired,
     type APIKey,
     type Combo,
     type ProviderConnection,
@@ -51,6 +52,9 @@
   let isAuthChecking = $state(true)
   let isAuthenticatedState = $state(false)
   let requireLogin = $state(false)
+  // True when the session ended mid-use (a dashboard call answered 401), so the
+  // login page can say why it appeared instead of looking like a random logout.
+  let sessionExpired = $state(false)
   let isCreateComboOpen = $state(false)
   let isMobileMenuOpen = $state(false)
   // The drawer markup is always mounted (it doubles as the desktop rail), so
@@ -148,11 +152,33 @@
         localStorage.removeItem('9router_auth')
       }
     } catch {
-      requireLogin = false
-      isAuthenticatedState = true
+      // Fail closed, matching api.checkRequireLogin: an auth check that could
+      // not be answered is not proof of a session, so show login rather than a
+      // dashboard whose APIs would 401.
+      requireLogin = true
+      isAuthenticatedState = false
+      sessionStorage.removeItem('9router_auth')
+      localStorage.removeItem('9router_auth')
     } finally {
       isAuthChecking = false
     }
+  }
+
+  // A 401 from a dashboard API means the session ended mid-use (expired cookie,
+  // restarted gateway, server-side invalidation). client.ts confirms it and
+  // calls back once, so the shell cannot stay rendered against a dead session.
+  function handleSessionExpired() {
+    // A notice is only meaningful when the user was actually working; landing
+    // on /login from a cold load is not a session ending.
+    if (isAuthenticatedState || activeTab !== 'login') sessionExpired = true
+    requireLogin = true
+    isAuthenticatedState = false
+    sessionStorage.removeItem('9router_auth')
+    localStorage.removeItem('9router_auth')
+    // The route is deliberately left alone. The auth gate below renders the
+    // login view because requireLogin is true and the session is not
+    // authenticated, and the URL still names the page the user was on — so
+    // signing in again resumes exactly there instead of at the overview.
   }
 
   // --- Mobile drawer -------------------------------------------------------
@@ -329,6 +355,7 @@
   })
 
   onMount(() => {
+    const unsubscribeSessionExpired = onSessionExpired(handleSessionExpired)
     checkAuth().then(() => {
       if (isAuthenticatedState && activeTab === 'login') {
         navigate('overview', true)
@@ -363,6 +390,9 @@
 
     const interval = setInterval(async () => {
       if (typeof document !== 'undefined' && document.hidden) return
+      // Nothing to refresh once the shell has handed back to login; the login
+      // view does its own probe, so polling a dead session would only add 401s.
+      if (!isAuthenticatedState || activeTab === 'login') return
       try {
         const [connsRes, nodesRes] = await Promise.all([
           api.getConnections().catch(() => null),
@@ -376,6 +406,7 @@
     }, 10000)
 
     return () => {
+      unsubscribeSessionExpired()
       clearInterval(interval)
       window.removeEventListener('popstate', handlePopState)
       window.removeEventListener('keydown', handleGlobalKeydown)
@@ -437,7 +468,9 @@
   </div>
 {:else if (requireLogin && !isAuthenticatedState) || activeTab === 'login'}
   <LoginView
+    sessionExpired={sessionExpired}
     onSuccess={() => {
+      sessionExpired = false
       isAuthenticatedState = true
       loadData()
       if (activeTab === 'login') {

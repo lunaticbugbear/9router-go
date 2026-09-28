@@ -4,8 +4,12 @@
 
   let {
     onSuccess,
+    sessionExpired = false,
   }: {
     onSuccess?: () => void
+    /** True when the shell was showing and the session ended mid-use, so the
+     * page explains why it is asking for the password again. */
+    sessionExpired?: boolean
   } = $props()
 
   let password = $state('')
@@ -221,6 +225,15 @@
                 {/if}
               </p>
             </div>
+
+            {#if sessionExpired && !mustChange}
+              <p
+                class="rounded-brand border border-warning/30 bg-warning/10 px-3 py-2 text-xs text-warning"
+                role="status"
+              >
+                Your session ended. Sign in again to continue.
+              </p>
+            {/if}
 
             {#if mustChange}
               <div class="rounded-brand border border-warning/30 bg-warning/10 px-3 py-3 text-xs text-warning" role="alert">

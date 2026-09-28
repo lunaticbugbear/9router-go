@@ -360,27 +360,13 @@ func loginEntryLocked(ip string) *loginAttempt {
 // only with the per-process peer proof (upstream trustedPeer); a TRUST_PROXY
 // XFF is honored only when explicitly enabled. Otherwise every caller shares
 // one bucket so spoofed headers cannot escape the limiter.
+//
+// The trust decision itself lives in forwardedClientAddr so this limiter and
+// the local-caller check (IsLocalRequest) can never disagree about who the
+// caller is.
 func LoginClientIP(r *http.Request) string {
-	if token := os.Getenv("NINEROUTER_PEER_TOKEN"); token != "" {
-		if subtle.ConstantTimeCompare(
-			[]byte(r.Header.Get("x-9r-peer-token")),
-			[]byte(token),
-		) == 1 {
-			if ip := strings.TrimSpace(r.Header.Get("x-9r-real-ip")); ip != "" {
-				return ip
-			}
-		}
-	}
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_PROXY")), "true") ||
-		strings.EqualFold(strings.TrimSpace(os.Getenv("TRUST_CLOUDFLARE")), "true") {
-		if cfIP := strings.TrimSpace(r.Header.Get("CF-Connecting-IP")); cfIP != "" {
-			return cfIP
-		}
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if first, _, _ := strings.Cut(xff, ","); strings.TrimSpace(first) != "" {
-				return strings.TrimSpace(first)
-			}
-		}
+	if fwd := forwardedClientAddr(r); fwd != "" {
+		return fwd
 	}
 	return "unknown"
 }

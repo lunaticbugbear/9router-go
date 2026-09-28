@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"9router/proxy/internal/auth"
 	"9router/proxy/internal/handlerutil"
 )
 
@@ -570,24 +571,17 @@ func isValidHTTPURL(v string) bool {
 	return parsed.Scheme == "http" || parsed.Scheme == "https"
 }
 
-// loopbackRequestHosts are hosts considered local callers (upstream LOOPBACK_HOSTS).
-var loopbackRequestHosts = map[string]bool{"localhost": true, "127.0.0.1": true, "::1": true}
-
-// nodeRequestIsLocal mirrors dashboardGuard.isLocalRequest: loopback peers may
-// reference self-hosted provider nodes, so the SSRF guard is skipped for them.
+// nodeRequestIsLocal reports whether the request came from this machine, which
+// may reference self-hosted provider nodes (e.g. ollama-local) so the SSRF
+// guard is skipped for them.
+//
+// This mirrors upstream dashboardGuard.isLocalRequest, but the decision is made
+// by auth.IsLocalRequest from the real peer address. It previously matched the
+// client-supplied Host header first, which let any remote caller skip the SSRF
+// guard by sending `Host: localhost` and reach internal services with the
+// stored credential attached.
 func nodeRequestIsLocal(r *http.Request) bool {
-	host := strings.ToLower(r.Host)
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = strings.Trim(h, "[]")
-	}
-	if loopbackRequestHosts[host] {
-		return true
-	}
-	remote, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil {
-		return loopbackRequestHosts[strings.Trim(strings.ToLower(remote), "[]")]
-	}
-	return false
+	return auth.IsLocalRequest(r)
 }
 
 // validateNodeNetworkMessage maps an outbound probe error to a user-friendly

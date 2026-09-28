@@ -1156,8 +1156,14 @@ func grokCliHeaders(accessToken string, psd map[string]any) map[string]string {
 }
 
 func grokMakeQuota(used, total float64, resetAt string) map[string]any {
-	// Mirror upstream makeQuota: total<=0 renders as an unlimited row with
-	// total=0 (the FE treats total===0 as unlimited).
+	// Mirror upstream makeQuota: a non-positive total renders as an unlimited
+	// row carrying total=0.
+	//
+	// The unlimited flag must be set explicitly. A zero total is ambiguous —
+	// the same value means "unlimited" here and "no meaningful total" for an
+	// exhausted account — so the dashboard renders "Unlimited" only for a row
+	// that says so (quota.unlimited === true) and prints the consumed count
+	// alone ("N / —") otherwise. It no longer infers unlimited from total===0.
 	if total <= 0 {
 		return map[string]any{
 			"used": math.Max(0, used), "total": 0,
